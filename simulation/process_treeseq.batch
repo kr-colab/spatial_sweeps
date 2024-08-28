@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH --partition=kern,kerngpu
+#SBATCH --job-name=paT
+#SBATCH --output=logs/%j\.out
+#SBATCH --error=logs/%j\.err
+#SBATCH --time=01:00:00
+#SBATCH --account=kernlab
+#SBATCH --mem=5000MB
+
+python ../treeseq_processor.py --infile $1 --ID $2 --SC $3 --NW $4 &&
+#python ../treeseq_processor.py --infile $1 --ID $2 --SC $3 --NW $4 &&
+gzip $1
