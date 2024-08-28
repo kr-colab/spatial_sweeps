@@ -1,0 +1,254 @@
+initialize()
+{
+    initializeSLiMModelType("nonWF");
+    initializeSLiMOptions(keepPedigrees=T, dimensionality="xy");
+    initializeTreeSeq();
+
+    // define or modify parameters via the command line with -d
+    // or by passing a file name to "ParamFile"
+    // or read in from a params.json file in the current working directory
+    // or OUTDIR if defined on the command line
+
+
+    defaults = Dictionary(
+        "SEED", getSeed(),	// random seed
+        "THETA", 1e-8, 		// recombination rate
+        "K", 5,				// carrying capacity per unit square
+        "SD", 0.75,		// dispersal distance
+        "SM", 0.75,		// mate interaction distance
+        "SI", 0.75, 		// interaction distance
+        "S", 0.01,			// selection coefficient
+        "H", 0.5,				// dominance coefficient
+        "RUNTIME", 100000,	// number of ticks to run for
+        "HEIGHT", 25, 		// height of simulation map
+        "WIDTH", 25, 		// width of simulation map
+        "EDGE", 1,         // maximum distance from center for mutated individual
+        "L", 1e8, 			// genome size
+        "LIFETIME", 4,				// mean lifetime
+        "BURNIN", 1000,		// number of ticks to wait before adding mutation
+        "FIXSTOP", T,      // whether to stop the simulation after fixation
+        "AFTERFIX", 1,   // how many generations to run after fixation
+        "TREETICK", 5.,   // how often to output tree sequences (must be float)
+        "FITNESS_FECUNDITY", F, // whether fitness should affect fecundity (default False)
+        "OUTDIR", exists("OUTDIR") ? OUTDIR else ".",
+        "OUTPATH", exists("OUTPATH") ? OUTPATH else "simulation",
+        "ParamFile", exists("ParamFile") ? ParamFile else "params.json"
+    );
+
+    if (fileExists(defaults.getValue("ParamFile"))){
+        local_params = Dictionary(paste(readFile(defaults.getValue("ParamFile")), sep="\n"));
+        defaults.addKeysAndValuesFrom(local_params);
+        defaults.setValue("read_from_paramfile", defaults.getValue("ParamFile"));
+    }
+    defaults.setValue("TREEOUT", defaults.getValue("OUTDIR") + "/" + defaults.getValue("OUTPATH"));
+    defaults.setValue("LOGOUT", defaults.getValue("OUTDIR") + "/" + defaults.getValue("OUTPATH") + ".log");
+    defaults.setValue("STATEOUT", defaults.getValue("OUTDIR") + "/" + defaults.getValue("OUTPATH") + "-tick" + defaults.getValue("BURNIN") + ".txt");
+
+    catn("-------------\n");
+    for (k in defaults.allKeys) {
+        if (!exists(k)) {
+            defineConstant(k, defaults.getValue(k));
+        } else {
+            defaults.setValue(k, executeLambda(paste(c(k, ";"), sep='')));
+        }
+        if (k != "README") {
+            catn(" " + k + ": " + defaults.getValue(k));
+        }
+    }
+    catn("-------------\n");
+    defineGlobal("params", defaults);
+
+
+    // seed
+    setSeed(SEED);
+
+    defineConstant("FECUN", 1 / LIFETIME); // mean fecundity
+    defineConstant("RHO", FECUN / ((1 + FECUN) * K)); // constant in spatial competition function
+
+    // mutation
+    initializeMutationType("m1", H, "f", S);
+    m1.convertToSubstitution = F;
+    initializeMutationRate(0);
+
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, L - 1);
+    initializeRecombinationRate(THETA);
+
+    // spatial competition
+    initializeInteractionType(1, "xy", reciprocal=T, maxDistance=SI * 3);
+    i1.setInteractionFunction("n", 1.0 / (2 * PI * SI^2), SI);
+
+    // mate choice
+    initializeInteractionType(2, "xy", reciprocal=T, maxDistance=SM * 3);
+    i2.setInteractionFunction("n", 1.0 / (2 * PI * SM^2), SM);
+
+    defineGlobal("mutationadded", F);
+    defineGlobal("mutationfixed", F);
+}
+
+
+reproduction() {
+    // population density-based *and* fitness-based fecundity
+    y = i1.localPopulationDensity(individual);
+    ftI = p1.cachedFitness(individual.index);
+
+    // generate offspring with probability 1 if Y =< K. If Y > K, reproduction rate is reduced
+    if (runif(1) < 2 / (1 + y / K))
+    {
+        mate = i2.drawByStrength(individual, 1);
+        if (mate.size())
+        {
+            ftM = p1.cachedFitness(mate.index);
+            if (FITNESS_FECUNDITY) { nOff = rpois(1, FECUN * ftI * ftM) ;}
+            else { nOff = rpois(1, FECUN) ;}
+            
+            for (i in seqLen(nOff))
+            {
+                pos = individual.spatialPosition + rnorm(2, 0, SD);
+                if (p1.pointInBounds(pos))   // absorbing boundaries
+                {
+                    offspring = subpop.addCrossed(individual, mate);
+                    offspring.setSpatialPosition(pos);
+                }
+            }
+        }
+    }
+    return;
+}
+
+function (float)mutDistance(o<Subpopulation>$ subpop) {
+    // function to keep track of mutation on landscape
+    inds=p1.individuals[p1.individuals.countOfMutationsOfType(1) > 0];
+    dist=max(sapply(inds, "i1.distance(applyValue, inds);"));
+    if (length(dist) < 1){
+        return NULL;
+    }
+    return(dist);
+}
+
+1 early() {
+    // initialize population
+    sim.addSubpop("p1", asInteger(K * HEIGHT * WIDTH));
+    p1.setSpatialBounds(c(0, 0, WIDTH, HEIGHT));
+    p1.individuals.setSpatialPosition(p1.pointUniform(p1.individualCount));
+}
+
+1 early() {
+    // set up logging
+    log = community.createLogFile(LOGOUT, logInterval=1);
+    log.addTick();
+    log.addSubpopulationSize(p1);
+    log.addCustomColumn('allele_freq', 'if (sim.mutations.size()==0) {return NAN;} else{return p1.species.mutationFrequencies(NULL);};');
+    log.addCustomColumn('mean_fitness', 'mean(p1.cachedFitness(NULL));');
+    log.addCustomColumn('allele_distance', 'mutDistance(p1);');
+    log.addCustomColumn('mean_age', 'mean(p1.individuals.age);');
+}
+
+1 early() {
+    // schedule sim finish
+    community.rescheduleScriptBlock(s1, ticks=BURNIN:RUNTIME);
+    community.rescheduleScriptBlock(s2, ticks=12:RUNTIME);
+    community.rescheduleScriptBlock(s3, ticks=RUNTIME);
+}
+
+early() {
+    // survival probability
+    i1.evaluate(p1);
+    inds = p1.individuals;
+    competition = i1.localPopulationDensity(inds);
+    inds.fitnessScaling = 1 / (1 + RHO * competition);
+}
+
+1 early() {
+	// save population state for restarting sim if mutation gets lost
+	sim.treeSeqOutput(STATEOUT);
+}
+
+1: late() {
+    // to be ready for mate choice
+    i1.evaluate(p1);
+    i2.evaluate(p1);
+}
+
+1: late() {
+    // stop simulation if everyone dies
+    if (p1.individualCount == 0)
+    {
+        sim.treeSeqOutput(TREEOUT+'.trees', metadata=params);
+        sim.simulationFinished();
+    }
+}
+
+s1 late() {
+    // add beneficial mutation to individual in landscape center if it hasn't been
+    if (!mutationadded) {
+       	 // save population state for restarting sim if mutation gets lost
+        sim.treeSeqOutput(STATEOUT);
+        xinds = p1.individuals[((WIDTH/2)-EDGE < p1.individuals.x & p1.individuals.x < (WIDTH/2)+EDGE)];
+        //xind = xinds[xind];
+        yinds = p1.individuals[((HEIGHT/2)-EDGE < p1.individuals.y & p1.individuals.y < (HEIGHT/2)+EDGE)];
+        //yind = yinds[yind];
+        centerind = setIntersection(xinds, yinds);
+        ages = centerind.age;
+        inds = centerind[which(ages==0)];
+
+        if (length(inds)>0) {
+            defineGlobal("mutationadded", T);
+            ind = sample(inds, 1);
+            target = sample(ind.genomes, 1);
+            target.addNewDrawnMutation(m1, asInteger(L/2));
+            defineGlobal("mutationtick", community.tick);
+            catn("Beneficial mutation added at tick " + community.tick);
+            catn("Origin point of mutation (x, y): (" + ind.x + "," + ind.y + ")");
+        }
+    }
+}
+
+s2 early() {
+    // restart sim if mutation gets lost
+    if (mutationadded) {
+
+        if (sim.countOfMutationsOfType(m1)==0) {
+        		deleteFile(LOGOUT);
+        		savedtrees = system('ls '+TREEOUT+'*.trees');
+        		for (i in seqAlong(savedtrees)){ deleteFile(savedtrees[i]); }
+        		cat(community.tick);
+        		cat("LOST -- RESTARTING\n");
+        		sim.readFromPopulationFile(STATEOUT);
+		  		setSeed(rdunif(1, 0, asInteger(2^62) - 1));
+		  		sim.recalculateFitness();   
+		  		i1.evaluate(p1);
+ 			   i2.evaluate(p1);     
+ 			   defineGlobal("mutationadded",F);    
+            
+        }
+
+        else if (p1.species.mutationFrequencies(NULL) == 1.0) {
+            if (FIXSTOP) {
+                // end of simulation if fixed
+                sim.treeSeqOutput(TREEOUT+'.trees', metadata=params);
+                sim.simulationFinished();
+            }
+            if (!mutationfixed){
+                community.rescheduleScriptBlock(s2, ticks=community.tick + AFTERFIX);
+                defineGlobal("mutationfixed", T);
+            }
+        }
+
+
+        // record relevant individuals in tree sequence
+        if (!isNULL(TREETICK)) {
+            if ((community.tick - mutationtick) % TREETICK == 0.0) {
+                sim.treeSeqOutput(TREEOUT+'_'+community.tick+'.trees', metadata=params);
+                //p1.species.treeSeqRememberIndividuals(p1.individuals); // remember indiviudals at Nth tick
+            }
+        }
+
+    }
+}
+
+s3 late() {
+    sim.treeSeqOutput(TREEOUT+'.trees', metadata=params);
+    sim.simulationFinished();
+}
+
