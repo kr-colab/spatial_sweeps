@@ -13,14 +13,18 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--vcf', help='path to VCF')
 parser.add_argument('--annotated', default=False, action='store_true', help='flag for VCFs annotated by SNPEff')
 parser.add_argument('--sample_data',  help='path to sample data TSV')
-parser.add_argument('--min_locs', default=3, type=int, help='minimum number of locations required to record a given allele.
-                                                    area recording works as follows for N given locations:
-                                                    if N>=3: calculate area of convex hull over sampling locations in square km
-                                                    if N==2: calculate area of a transect between two sampling locations.
-                                                             transect width is determined by --transect (default = 1km).
+parser.add_argument('--min_locs', default=3, type=int, help='minimum number of locations required to record a given allele. \
+                                                    area recording works as follows for N given locations: \
+                                                    if N>=3: calculate area of convex hull over sampling locations in square km \
+                                                    if N==2: calculate area of a transect between two sampling locations. \
+                                                             transect width is determined by --transect (default = 1km). \
                                                     if N==1: return default area covered by a given sampling site')
-parser.add_argument('--transect', default=1, help='default transect width between two sampling sites'
-parser.add_argument('--sample_area', default=0, help='default area covered by a given sampling site')
+parser.add_argument('--transect', default=1, help='default transect width between two sampling sites')
+parser.add_argument('--sample_area', default=1, help='default area (in km2) covered by a given sampling site')
+parser.add_argument('--keep_locs', default=False, action='store_true', help='save locations of allele carriers? \
+                                                                            if True, outputs seperate tsv appended with _allele_locations.txt \
+                                                                            with the following format\
+                                                                             ')
 parser.add_argument('--out', help='output path')
 args = parser.parse_args()
 
