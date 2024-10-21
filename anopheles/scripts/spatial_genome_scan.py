@@ -146,7 +146,7 @@ def alt_allele(alt, position_index, position_count, metadata, annotated,  positi
     locs = np.unique(np.array(carriers[['x','y']]), axis=0) # unique locations of allele carriers
     locs_x = locs[:,0]
     locs_y = locs[:,1]
-    nlocs, area, maxdist = spatial_spread(locs)
+    nlocs, area, maxdist = spatial_spread(locs, args.min_locs, args.transect, args.sample_area) 
     if annotated:
         return allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist
     else:
