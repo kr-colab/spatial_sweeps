@@ -165,14 +165,23 @@ def spatial_spread(locs, min_locs, transect, sample_area):
     elif nlocs == 2:
         coords = list(zip(locs[:,0],locs[:,1]))
         area = polygon_distance(coords) / 1000
-        maxdist = max(cdist(coords, coords, lambda u, v: geodist(u, v).kilometers))
+        
+        # DEBUG!!
+        #maxdist = max(cdist(coords, coords, lambda u, v: geodist(u, v).kilometers))
+        maxdist=0
+        
         return nlocs, area, maxdist
     else: 
         # make convex hull over locations
         hull = ConvexHull(locs)
         coords = list(zip(locs[hull.vertices,0],locs[hull.vertices,1]))
         area = polygon_area(coords) / 1000000
-        maxdist = max(cdist(coords, coords, lambda u, v: geodist(u, v).kilometers))
+        
+        # DEBUG!!
+        #maxdist = max(cdist(coords, coords, lambda u, v: geodist(u, v).kilometers))
+        maxdist=0
+
+
         return nlocs, area, maxdist
 
 
