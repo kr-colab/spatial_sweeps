@@ -137,8 +137,8 @@ def alt_allele(alt, position_index, position_count, metadata, annotated,  positi
     """
     # for alternate alle, get frequency and annotation
     allele_frequency = position_count[alt] / (len(metadata) * 2)
-    allele_impact = position_impact[alt-1]
     if annotated:
+        allele_impact = position_impact[alt-1]
         allele_annotation = position_annotation[alt-1]
     # individuals in GT array with that alternate allele
     mask = np.sum(gt[index] == alt, axis=1) > 1
