@@ -232,7 +232,7 @@ else:
     gt, metadata, position = load_data(args.vcf, 
                                                                                 args.sample_data,
                                                                                 args.annotated)
-    gt, ANN_Annotation, ANN_Annotation_Impact, position, ac = filter_alleles(gt, position, args.annotated)
+    gt, position, ac = filter_alleles(gt, position, args.annotated)
 
     SNP_position = np.full(len(position)*3, np.nan)
     SNP_alternate = np.full(len(position)*3, np.nan)
