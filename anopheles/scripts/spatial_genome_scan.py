@@ -157,7 +157,7 @@ def spatial_spread(locs, min_locs, transect, sample_area):
     calculate the spatial spread of individuals carrying given allele in km2
     """
     nlocs = len(locs)
-    if nlocs < minlocs:
+    if nlocs < min_locs:
         return float("nan")
     if nlocs == 1:
         return 1, sample_area, 0
