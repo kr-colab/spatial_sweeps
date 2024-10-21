@@ -1,0 +1,109 @@
+---
+title: "Untitled"
+author: "Clara Rehmann"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("~/phd/research/spatial_sweeps/simulation/")
+library(plyr)
+library(tidyverse)
+library(data.table)
+library(MASS)
+library(patchwork)
+library(ggiraph)
+library(scales)
+library(quantreg)
+```
+
+```{r process-scan}
+padf <- fread('out/power_analysis_mod.txt', fill=TRUE)
+padf <- data.table(padf)
+columns <- colnames(padf)[6:length(padf)]
+padf <- padf %>% dplyr::select(colnames(padf)[1:6])
+padf <- padf %>% tidyr::separate(N_mutations, into = columns, sep=" ")
+padf <- padf %>% drop_na()
+padf <- mutate_all(padf, function(x) as.numeric(as.character(x)))
+
+padfkeep <- padf
+
+padf
+```
+
+```{r}
+## line up ticks
+roundUp <- function(x,m) m*ceiling(x / m)
+align_tick <- function(scoef, treetick, Nw, padf){
+  sims <- unique(padf[(padf$scoef == scoef & padf$Nw == Nw),]$sim)
+  for (s in sims){
+      tix <- padf[(padf$scoef == scoef & padf$Nw == Nw & padf$sim == s),]$tick
+      padf[(padf$scoef == scoef & padf$Nw == Nw & padf$sim == s),]$tick <- roundUp(tix, treetick)
+    }
+  return(padf)
+}
+
+for (Nw in c(10,100,1000)){
+  padf <- align_tick(0.01, 2, Nw, padf)
+  padf <- align_tick(0.001, 5, Nw, padf)
+  padf <- align_tick(0.0001, 10, Nw, padf)
+}
+
+fwrite(padf, 'out/power_analysis_processed.txt')
+```
+
+```{r}
+padf <- fread('out/power_analysis_processed.txt')
+summ_df <- padf %>% group_by(scoef, Nw, tick) %>% dplyr::summarize(area = mean(area),
+                                                                        distance=mean(distance),
+                                                                   frequency=mean(frequency),
+                                                                   N_mutations=mean(N_mutations),
+                                                                   outliers=mean(outliers),
+                                                      outlier_SNPdetected=mean(outlier_SNPdetected),
+                                                      windowoutliers=mean(windowoutliers),
+                                                      windowoutlier_SNPdetected=mean(windowoutlier_SNPdetected),
+                                                      windowoutlier_nonoutlier_SNPdetected=mean(windowoutlier_nonoutlier_SNPdetected))
+```
+
+
+```{r}
+ggplot(summ_df %>% arrange(scoef)) + theme_bw() +
+  geom_smooth(aes(x=frequency, y=area, color=scoef, group=scoef), method='loess', span=0.05) +
+  facet_wrap(vars(Nw)) +
+  scale_color_continuous(trans='log10')
+
+```
+
+```{r}
+ggplot(summ_df[summ_df$frequency<1,] %>% arrange(-scoef)) + theme_bw() +
+  geom_hline(aes(yintercept=mean(padf$outliers / padf$N_mutations))) + 
+  geom_smooth(aes(x=frequency, y=outlier_SNPdetected, color=scoef, group=scoef), method='loess',span=0.05) +
+  facet_grid(cols=vars(Nw), scales='free') +
+  scale_color_continuous(trans='log10') +
+  scale_y_continuous(limits=c(0,1))
+```
+
+```{r}
+ggplot(summ_df[summ_df$frequency<1,] %>% arrange(-scoef)) + theme_bw() +
+  geom_hline(aes(yintercept=mean(padf$windowoutliers / padf$N_mutations))) + 
+  geom_smooth(aes(x=frequency, y=windowoutlier_SNPdetected, color=scoef, group=scoef),method='loess',span=0.05) +
+  facet_grid(cols=vars(Nw), scales='free') +
+  scale_color_continuous(trans='log10')+
+  scale_y_continuous(limits=c(0,1))
+
+```
+
+```{r}
+ggplot(summ_df) + theme_bw() +
+  geom_smooth(aes(x=frequency, y=outliers/N_mutations, group=scoef, color=scoef), method='loess', span=0.05) +
+  facet_wrap(vars(Nw)) +
+  scale_color_continuous(trans='log10')
+```
+
+```{r}
+ggplot(summ_df) + theme_bw() +
+  geom_smooth(aes(x=frequency, y=windowoutliers/N_mutations, group=scoef, color=scoef), method='loess', span=0.05) +
+  facet_wrap(vars(Nw)) +
+  scale_color_continuous(trans='log10')
+```

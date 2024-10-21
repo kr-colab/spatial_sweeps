@@ -319,6 +319,10 @@ fwrite(SYoutliergenes, 'out/SY_outlier_genes.txt', sep='\n')
 outliergenes <- allsnps[allsnps$outlier == TRUE,]$`Gene ID`
 outliergenes <- as.list(unique(outliergenes[outliergenes != 'none']))
 fwrite(outliergenes, 'out/outlierSNP_genes.txt', sep='\n')
+
+hifioutliergenes <- allsnps[allsnps$outlier == TRUE & allsnps$frequency >= 0.75,]$`Gene ID`
+hifioutliergenes <- as.list(unique(hifioutliergenes[hifioutliergenes != 'none']))
+fwrite(hifioutliergenes, 'out/hifioutlierSNP_genes.txt', sep='\n')
 ```
 
 
@@ -534,6 +538,9 @@ for (inv in c('2Rb','2Rc','2La')){
     outlierinvgenes <- as.list(unique(outlierinvgenes[outlierinvgenes != 'none']))
     fwrite(outlierinvgenes, paste0('out/inversion/',inv,'outlierSNP_genes.txt'), sep='\n')
     
+    hifioutlierinvgenes <- snpdf[snpdf$outlier == TRUE & snpdf$frequency >= 0.75,]$`Gene ID`
+    hifioutlierinvgenes <- as.list(unique(hifioutliergenes[hifioutliergenes != 'none']))
+    fwrite(hifioutlierinvgenes, paste0('out/inversion/',inv,'hifioutlierSNP_genes.txt'), sep='\n')
     
     ### outlier vs. nonoutlier density along each chromosome
     
@@ -892,6 +899,33 @@ for (i in seq(length(clusters))){
 }
 ```
 
+## Genes with high-frequency outlier SNPs {.tabset}
+
+Since our method has the most power when SNPs are at higher frequency, we'll restrict our analysis to genes with outlier SNPs that are at or above 75% frequency.
+
+```{r hifisnp-DAVID-enrich, results='asis', echo=FALSE}
+header.true <- function(df) {
+  names(df) <- as.character(unlist(df[1,]))
+  df[-1,]
+}
+
+snpdavidenrichment <- fread('out/all_hifioutlierSNPgenes_DAVIDenrichment.txt', fill=TRUE, sep='\t')
+clusters <- which(grepl("Annotation Cluster", snpdavidenrichment$V1))
+for (i in seq(length(clusters))){
+  enrch <- toString(snpdavidenrichment[clusters[i],'V2'])
+  if (i == length(clusters)){ dtb <- snpdavidenrichment[seq(clusters[i]+1,nrow(snpdavidenrichment)),] }
+  else { dtb <- snpdavidenrichment[seq(clusters[i]+1,clusters[i+1]-1),] }
+  dtb <- header.true(dtb)
+  
+  if ((sum(as.numeric(dtb$Benjamini) < 0.1, na.rm=TRUE) > 0)){
+    cat(paste0("### Annotation cluster ", i))
+    cat("\n")
+    print(knitr::kable(dtb %>% dplyr::select(-Genes), caption=enrch))
+    cat("\n")
+  }
+}
+```
+
 ## Genes in outlier windows {.tabset}
 
 Next, we'll do the same thing, but for genes that are within outlier windows:
@@ -1105,6 +1139,7 @@ chisq.test(cont)
 
 ```{r figure-setup}
 library(ggnewscale)
+library(viridis)
 pal = c('#182706',
         '#27301D',
         '#32413A',
@@ -1123,7 +1158,7 @@ pal = c('#182706',
 palgen = colorRampPalette(pal)
 palgen_rev = colorRampPalette(rev(pal))
 colgen = colorRamp(pal)
-allsnpsplot <- allsnps
+allsnpsplot <- fread('out/all_snps_INVincluded_annotated.txt')
 ```
 
 ## Anopheles joint distribution
@@ -1144,7 +1179,7 @@ ag_map <- ggplot()+coord_map(projection = "mollweide",
   )+
   geom_polygon(data=fortify(map),aes(x=long,y=lat,group=group),fill='white',color='black',lwd=0.2)+
   geom_count(data=metadata_count,aes(x=x,y=y,fill=n,size=n),color='black',pch=21) +
-  scale_fill_gradientn(colors=palgen(100), guide = "legend")
+  scale_fill_viridis(option='C', guide = "legend")
 
 ag_map
 ```
@@ -1176,9 +1211,9 @@ outlier_notIG$plot_annotation <- factor(outlier_notIG$plot_annotation, levels=c(
 # dataframe for missense outlier SNPs that change protein structure/stability
 missenseoutliersplot <- missenseoutliers[missenseoutliers$`ddG (kcal/mol)` != 0,] %>% dplyr::select(c('frequency','area','impact','annotation','INV','position','chromosome'))
 missenseoutliersplot$bin <- 0
-missenseoutliersplot <- rbind(missenseoutliersplot, allsnps[allsnps$outlier == TRUE & allsnps$outlierwindow == TRUE & allsnps$annotation == "stop_gained",] %>% dplyr::select(c('frequency','area','impact','annotation','INV','position','chromosome')))
+missenseoutliersplot <- rbind(missenseoutliersplot, (allsnps[(allsnps$outlier == TRUE & allsnps$outlierwindow == TRUE & allsnps$annotation == "stop_gained"),] %>% dplyr::select(c('frequency','area','impact','annotation','INV','position','chromosome','bin'))))
 missenseoutliersplot$plot_annotation <- 'Nonsynonymous variant'
-
+missenseoutliersplot$bin <- 0
 ag_jdist <- ggplot() + theme_classic() +
   geom_point(data=allsnpsplot[allsnpsplot$plot_annotation=='none',], mapping=aes(x=frequency, y=area), alpha=0.01, size=0.5) + 
   geom_point(data=allsnpsplot[allsnpsplot$plot_annotation!='none',], mapping=aes(x=frequency, y=area, color=plot_annotation), alpha=0.025, size=0.5) + 
@@ -1203,7 +1238,7 @@ ag_jdist +
                 theme(legend.box.spacing=margin(0),
                       legend.background = element_blank(), 
                       plot.background = element_blank()), 
-                0.45, 0, 1, 0.45)
+                0.4, 0, 1, 0.5)
 ggsave('agjointdistribution.pdf', width=8, height=5, units='in')
 ```
 
@@ -1274,7 +1309,7 @@ window_plot <- ggplot() + theme_minimal() +
                                               fill=area), 
              pch=25,) +
   scale_size_continuous(range=c(0.3, 2), guide='legend', ) +
-  scale_fill_gradientn(colors=palgen(100)) +
+  scale_fill_viridis(option='C') +
   facet_wrap(vars(chromosome), scales = "free")
 
 window_plot
@@ -1316,6 +1351,7 @@ mstex$`SNP frequency` <- as.numeric(mstex$`SNP frequency`)
 mstex$`ddG (kcal/mol)` <- as.numeric(mstex$`ddG (kcal/mol)`)
 mstex$`SNP area (km2)` <- as.numeric(mstex$`SNP area (km2)`)
 mstex$Function <- factor(mstex$Function, levels=c('insecticide target','immune response','transcriptional regulation','DNA repair','sensory','cellular division','unannotated'))
+mstex[mstex$Function == 'insecticide target',]$Function <- 'insecticide resistance'
 
 
 mstex$xvar <- seq(nrow(mstex))
@@ -1344,8 +1380,11 @@ ggplot() + theme_minimal() +
     new_scale('size') +
   geom_point(data=mstex %>% arrange(-`ddG (kcal/mol)`),
              aes(x=`SNP frequency`, y=`ddG (kcal/mol)`, size=`SNP area (km2)`, color=`Function`)) +
-  scale_color_manual(values=c('#24AA87','#54EC87', '#bcf0af', '#375B69','#808080','#A9A9A9','#DCDCDC')) +
+  scale_color_manual(values=c('#F2F658','#54EC87', '#24AA87', '#0F1682', '#375B69','#808080','#A9A9A9','#DCDCDC')) +
 
+  #24AA87
+  #bcf0af
+  
   #scale_color_continuous(trans='log10') +
   scale_y_continuous(trans=scales::pseudo_log_trans(base=10, sigma=0.1)) +
   scale_x_continuous(trans='log10', breaks=c(0.1, 0.25, 0.5, 1))

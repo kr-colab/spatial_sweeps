@@ -107,7 +107,7 @@ def load_data(vcf, sample_data, annotated):
     
 
 
-def filter_alleles(gt, position, annotated, ANN_Annotation, ANN_Annotation_Impact):
+def filter_alleles(gt, position, annotated, ANN_Annotation=None, ANN_Annotation_Impact=None):
     ac = gt.count_alleles()
     allele_filter = np.sum(ac[:,1:4], axis=1) > 1
     gt = gt[allele_filter]
@@ -120,7 +120,7 @@ def filter_alleles(gt, position, annotated, ANN_Annotation, ANN_Annotation_Impac
     else:
         return gt, position, ac
 
-def at_position(position_index, position, ac, annotated, ANN_Annotation, ANN_Impact):
+def at_position(position_index, position, ac, annotated, ANN_Annotation=None, ANN_Impact=None):
     # pull out genotype information at genomic position
     position_position = position[position_index]
     position_count = ac[position_index]
@@ -131,7 +131,7 @@ def at_position(position_index, position, ac, annotated, ANN_Annotation, ANN_Imp
     else:
         return position_position, position_count
 
-def alt_allele(alt, position_index, position_count, metadata, annotated,  position_annotation):
+def alt_allele(alt, position_index, position_count, metadata, annotated,  position_annotation=None):
     """
     for alternate allele (either [1, 2, 3]),
     get frequency, annotation info, and spatial spread of carriers
@@ -175,53 +175,97 @@ def spatial_spread(locs, min_locs, transect, sample_area):
         maxdist = max(cdist(coords, coords, lambda u, v: geodist(u, v).kilometers))
         return nlocs, area, maxdist
 
-gt, metadata, ANN_Annotation, ANN_Annotation_Impact, position = load_data(args.vcf, 
-                                                                            args.sample_data)
-gt, ANN_Annotation, ANN_Annotation_Impact, position, ac = filter_alleles(gt, 
-                                                                            ANN_Annotation, 
-                                                                            ANN_Annotation_Impact, 
-                                                                            position)
 
-SNP_position = np.full(len(position)*3, np.nan)
-SNP_alternate = np.full(len(position)*3, np.nan)
-SNP_frequency = np.full(len(position)*3, np.nan)
-SNP_annotation = np.full(len(position)*3, np.nan, dtype=object)
-SNP_impact = np.full(len(position)*3, np.nan, dtype=object)
-SNP_area = np.full(len(position)*3, np.nan)
-SNP_locs = np.full(len(position)*3, np.nan)
-SNP_maxdist = np.full(len(position)*3, np.nan)
+if args.annotated:
+    gt, metadata, ANN_Annotation, ANN_Annotation_Impact, position = load_data(args.vcf, 
+                                                                                args.sample_data)
+    gt, ANN_Annotation, ANN_Annotation_Impact, position, ac = filter_alleles(gt, 
+                                                                                ANN_Annotation, 
+                                                                                ANN_Annotation_Impact, 
+                                                                                position)
 
-array_place = 0
-for index in range(len(position)):
-    position_annotation, position_impact, position_position, position_count = at_position(index)
-    for alt_index in [1, 2, 3]:
-        allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, position_annotation)
-        if allele_frequency > 0:
-            SNP_position[array_place] = position_position
-            SNP_alternate[array_place] = alt_index
-            SNP_frequency[array_place] = allele_frequency
-            SNP_annotation[array_place] = allele_annotation
-            SNP_impact[array_place] = allele_impact
-            SNP_area[array_place] = area
-            SNP_locs[array_place] = nlocs
-            SNP_maxdist[array_place] = maxdist
-            
-            array_place += 1
+    SNP_position = np.full(len(position)*3, np.nan)
+    SNP_alternate = np.full(len(position)*3, np.nan)
+    SNP_frequency = np.full(len(position)*3, np.nan)
+    SNP_annotation = np.full(len(position)*3, np.nan, dtype=object)
+    SNP_impact = np.full(len(position)*3, np.nan, dtype=object)
+    SNP_area = np.full(len(position)*3, np.nan)
+    SNP_locs = np.full(len(position)*3, np.nan)
+    SNP_maxdist = np.full(len(position)*3, np.nan)
+
+    array_place = 0
+    for index in range(len(position)):
+        position_annotation, position_impact, position_position, position_count = at_position(index)
+        for alt_index in [1, 2, 3]:
+            allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, position_annotation)
+            if allele_frequency > 0:
+                SNP_position[array_place] = position_position
+                SNP_alternate[array_place] = alt_index
+                SNP_frequency[array_place] = allele_frequency
+                SNP_annotation[array_place] = allele_annotation
+                SNP_impact[array_place] = allele_impact
+                SNP_area[array_place] = area
+                SNP_locs[array_place] = nlocs
+                SNP_maxdist[array_place] = maxdist
+                
+                array_place += 1
 
 
-SNP_annotation = SNP_annotation[ ~ np.isnan(SNP_position) ]
-SNP_impact = SNP_impact[ ~ np.isnan(SNP_position) ]
-SNP_position = SNP_position[ ~ np.isnan(SNP_position) ]
-SNP_alternate = SNP_alternate[ ~ np.isnan(SNP_alternate) ]
-SNP_frequency = SNP_frequency[ ~ np.isnan(SNP_frequency) ]
-SNP_area = SNP_area[ ~ np.isnan(SNP_area) ]
-SNP_locs = SNP_locs[ ~ np.isnan(SNP_locs) ]
-SNP_maxdist = SNP_maxdist[ ~ np.isnan(SNP_maxdist) ]
+    SNP_annotation = SNP_annotation[ ~ np.isnan(SNP_position) ]
+    SNP_impact = SNP_impact[ ~ np.isnan(SNP_position) ]
+    SNP_position = SNP_position[ ~ np.isnan(SNP_position) ]
+    SNP_alternate = SNP_alternate[ ~ np.isnan(SNP_alternate) ]
+    SNP_frequency = SNP_frequency[ ~ np.isnan(SNP_frequency) ]
+    SNP_area = SNP_area[ ~ np.isnan(SNP_area) ]
+    SNP_locs = SNP_locs[ ~ np.isnan(SNP_locs) ]
+    SNP_maxdist = SNP_maxdist[ ~ np.isnan(SNP_maxdist) ]
 
-df = pd.DataFrame({'position':SNP_position,
-                    'alternate':SNP_alternate,
-                    'frequency':SNP_frequency,
-                    'annotation':SNP_annotation,
-                    'impact':SNP_impact,
-                    'area':SNP_area})
-df.to_csv(args.out+'_spatial_genome_scan.txt', sep='\t') 
+    df = pd.DataFrame({'position':SNP_position,
+                        'alternate':SNP_alternate,
+                        'frequency':SNP_frequency,
+                        'annotation':SNP_annotation,
+                        'impact':SNP_impact,
+                        'area':SNP_area})
+    df.to_csv(args.out+'_spatial_genome_scan.txt', sep='\t') 
+
+else:
+    gt, metadata, position = load_data(args.vcf, 
+                                       args.sample_data)
+    gt, position, ac = filter_alleles(gt, position)
+
+    SNP_position = np.full(len(position)*3, np.nan)
+    SNP_alternate = np.full(len(position)*3, np.nan)
+    SNP_frequency = np.full(len(position)*3, np.nan)
+    SNP_area = np.full(len(position)*3, np.nan)
+    #SNP_locs = np.full(len(position)*3, np.nan)
+    SNP_maxdist = np.full(len(position)*3, np.nan)
+
+    array_place = 0
+    for index in range(len(position)):
+        position_annotation, position_impact, position_position, position_count = at_position(index)
+        for alt_index in [1, 2, 3]:
+            allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, position_annotation)
+            if allele_frequency > 0:
+                SNP_position[array_place] = position_position
+                SNP_alternate[array_place] = alt_index
+                SNP_frequency[array_place] = allele_frequency
+                SNP_area[array_place] = area
+                SNP_locs[array_place] = nlocs
+                SNP_maxdist[array_place] = maxdist
+                
+                array_place += 1
+
+
+    SNP_position = SNP_position[ ~ np.isnan(SNP_position) ]
+    SNP_alternate = SNP_alternate[ ~ np.isnan(SNP_alternate) ]
+    SNP_frequency = SNP_frequency[ ~ np.isnan(SNP_frequency) ]
+    SNP_area = SNP_area[ ~ np.isnan(SNP_area) ]
+    SNP_locs = SNP_locs[ ~ np.isnan(SNP_locs) ]
+    SNP_maxdist = SNP_maxdist[ ~ np.isnan(SNP_maxdist) ]
+
+    df = pd.DataFrame({'position':SNP_position,
+                        'alternate':SNP_alternate,
+                        'frequency':SNP_frequency,
+                        'area':SNP_area})
+    df.to_csv(args.out+'_spatial_genome_scan.txt', sep='\t') 
+
