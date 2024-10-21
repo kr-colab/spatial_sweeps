@@ -1,6 +1,7 @@
 import pandas as pd, numpy as np
 import allel, math, argparse
-from scipy.spatial import ConvexHull, distance 
+from scipy.spatial import ConvexHull, distance
+from scipy.spatial.distance import cdist 
 from pyproj import Geod
 from shapely.geometry import Polygon, polygon
 from geopy.distance import distance as geodist
