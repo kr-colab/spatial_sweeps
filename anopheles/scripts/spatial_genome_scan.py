@@ -55,7 +55,6 @@ def polygon_distance(coords):
 def load_data(vcf, sample_data, annotated):
     # read metadata
     metadata = pd.read_csv(sample_data, sep='\t')
-    samples = callset['samples'] # sample IDs
     if annotated:
         # read vcf data
         callset = allel.read_vcf(vcf, 
@@ -67,7 +66,6 @@ def load_data(vcf, sample_data, annotated):
                                  numbers={'ANN': 3},
                                  transformers=allel.ANNTransformer())
         # read metadata
-        metadata = pd.read_csv(sample_data, sep='\t')
         samples = callset['samples'] # sample IDs
         # deal with vcf
         gt = allel.GenotypeArray(callset['calldata/GT']) # genotype array
@@ -91,6 +89,7 @@ def load_data(vcf, sample_data, annotated):
                                          'calldata/GT',
                                          'variants/FILTER_PASS',
                                          'variants/POS'])
+        samples = callset['samples'] # sample IDs
         # deal with vcf
         gt = allel.GenotypeArray(callset['calldata/GT']) # genotype array
         position = callset['variants/POS'] # SNP position
