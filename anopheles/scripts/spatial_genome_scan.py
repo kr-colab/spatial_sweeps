@@ -178,11 +178,12 @@ def spatial_spread(locs, min_locs, transect, sample_area):
 
 if args.annotated:
     gt, metadata, ANN_Annotation, ANN_Annotation_Impact, position = load_data(args.vcf, 
-                                                                                args.sample_data)
-    gt, ANN_Annotation, ANN_Annotation_Impact, position, ac = filter_alleles(gt, 
+                                                                                args.sample_data,
+                                                                                args.annotated)
+    gt, ANN_Annotation, ANN_Annotation_Impact, position, ac = filter_alleles(gt, position, args.annotated,
                                                                                 ANN_Annotation, 
                                                                                 ANN_Annotation_Impact, 
-                                                                                position)
+                                                                                )
 
     SNP_position = np.full(len(position)*3, np.nan)
     SNP_alternate = np.full(len(position)*3, np.nan)
@@ -195,9 +196,9 @@ if args.annotated:
 
     array_place = 0
     for index in range(len(position)):
-        position_annotation, position_impact, position_position, position_count = at_position(index)
+        position_annotation, position_impact, position_position, position_count = at_position(index, position, ac, args.annotated, ANN_Annotation, ANN_Annotation_Impact)
         for alt_index in [1, 2, 3]:
-            allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, position_annotation)
+            allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, metadata, args.annotated, position_annotation)
             if allele_frequency > 0:
                 SNP_position[array_place] = position_position
                 SNP_alternate[array_place] = alt_index
@@ -230,21 +231,22 @@ if args.annotated:
 
 else:
     gt, metadata, position = load_data(args.vcf, 
-                                       args.sample_data)
-    gt, position, ac = filter_alleles(gt, position)
+                                                                                args.sample_data,
+                                                                                args.annotated)
+    gt, ANN_Annotation, ANN_Annotation_Impact, position, ac = filter_alleles(gt, position, args.annotated)
 
     SNP_position = np.full(len(position)*3, np.nan)
     SNP_alternate = np.full(len(position)*3, np.nan)
     SNP_frequency = np.full(len(position)*3, np.nan)
     SNP_area = np.full(len(position)*3, np.nan)
-    #SNP_locs = np.full(len(position)*3, np.nan)
+    SNP_locs = np.full(len(position)*3, np.nan)
     SNP_maxdist = np.full(len(position)*3, np.nan)
 
     array_place = 0
     for index in range(len(position)):
-        position_annotation, position_impact, position_position, position_count = at_position(index)
+        position_position, position_count = at_position(index, position, ac, args.annotated)
         for alt_index in [1, 2, 3]:
-            allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, position_annotation)
+            allele_frequency, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, metadata, args.annotated)
             if allele_frequency > 0:
                 SNP_position[array_place] = position_position
                 SNP_alternate[array_place] = alt_index
@@ -268,4 +270,4 @@ else:
                         'frequency':SNP_frequency,
                         'area':SNP_area})
     df.to_csv(args.out+'_spatial_genome_scan.txt', sep='\t') 
-
+ 
