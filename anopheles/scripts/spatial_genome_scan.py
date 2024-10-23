@@ -20,14 +20,18 @@ parser.add_argument('--min_locs', default=3, type=int, help='minimum number of l
                                                     if N==2: calculate area of a transect between two sampling locations. \
                                                              transect width is determined by --transect (default = 1km). \
                                                     if N==1: return default area covered by a given sampling site')
-parser.add_argument('--transect', default=1, help='default transect width between two sampling sites')
-parser.add_argument('--sample_area', default=1, help='default area (in km2) covered by a given sampling site')
+parser.add_argument('--transect', default=1, type=float, help='default transect width between two sampling sites')
+parser.add_argument('--sample_area', default=1, type=float, help='default area (in km2) covered by a given sampling site')
 parser.add_argument('--keep_locs', default=False, action='store_true', help='save locations of allele carriers? \
                                                                             if True, outputs seperate tsv appended with _allele_locations.txt \
                                                                             with the following format\
                                                                              ')
 parser.add_argument('--out', help='output path')
 args = parser.parse_args()
+Min_locs=args.min_locs
+Transect=args.transect
+Sample_area=args.sample_area
+
 
 def polygon_area(coords):
     """
@@ -131,36 +135,14 @@ def at_position(position_index, position, ac, annotated, ANN_Annotation=None, AN
     else:
         return position_position, position_count
 
-def alt_allele(alt, position_index, position_count, metadata, annotated,  position_annotation=None):
-    """
-    for alternate allele (either [1, 2, 3]),
-    get frequency, annotation info, and spatial spread of carriers
-    """
-    # for alternate alle, get frequency and annotation
-    allele_frequency = position_count[alt] / (len(metadata) * 2)
-    if annotated:
-        allele_impact = position_impact[alt-1]
-        allele_annotation = position_annotation[alt-1]
-    # individuals in GT array with that alternate allele
-    mask = np.sum(gt[index] == alt, axis=1) > 1
-    carriers = metadata[mask]
-    locs = np.unique(np.array(carriers[['x','y']]), axis=0) # unique locations of allele carriers
-    locs_x = locs[:,0]
-    locs_y = locs[:,1]
-    nlocs, area, maxdist = spatial_spread(locs, args.min_locs, args.transect, args.sample_area) 
-    if annotated:
-        return allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist
-    else:
-        return allele_frequency, area, nlocs, maxdist
- 
 def spatial_spread(locs, min_locs, transect, sample_area):
     """
     calculate the spatial spread of individuals carrying given allele in km2
     """
     nlocs = len(locs)
     if nlocs < min_locs:
-        return float("nan")
-    if nlocs == 1:
+        return np.nan, np.nan, np.nan
+    elif nlocs == 1:
         return 1, sample_area, 0
     elif nlocs == 2:
         coords = list(zip(locs[:,0],locs[:,1]))
@@ -184,6 +166,31 @@ def spatial_spread(locs, min_locs, transect, sample_area):
 
         return nlocs, area, maxdist
 
+
+def alt_allele(alt, position_index, position_count, metadata, annotated,  position_annotation=None):
+    """
+    for alternate allele (either [1, 2, 3]),
+    get frequency, annotation info, and spatial spread of carriers
+    """
+    # for alternate alle, get frequency and annotation
+    if annotated:
+        allele_frequency = position_count[alt] / (len(metadata) * 2)
+        allele_impact = position_impact[alt-1]
+        allele_annotation = position_annotation[alt-1]
+    else:
+        allele_frequency = position_count[alt] / (len(metadata) * 2)
+    # individuals in GT array with that alternate allele
+    mask = np.sum(gt[index] == alt, axis=1) > 1
+    carriers = metadata[mask]
+    locs = np.unique(np.array(carriers[['x','y']]), axis=0) # unique locations of allele carriers
+    locs_x = locs[:,0]
+    locs_y = locs[:,1]
+    nlocs, area, maxdist = spatial_spread(locs, Min_locs, Transect, Sample_area) 
+    if annotated:
+        return allele_frequency, allele_annotation, allele_impact, area, nlocs, maxdist
+    else:
+        return allele_frequency, area, nlocs, maxdist
+ 
 
 if args.annotated:
     gt, metadata, ANN_Annotation, ANN_Annotation_Impact, position = load_data(args.vcf, 
@@ -221,14 +228,15 @@ if args.annotated:
                 array_place += 1
 
 
-    SNP_annotation = SNP_annotation[ ~ np.isnan(SNP_position) ]
-    SNP_impact = SNP_impact[ ~ np.isnan(SNP_position) ]
-    SNP_position = SNP_position[ ~ np.isnan(SNP_position) ]
-    SNP_alternate = SNP_alternate[ ~ np.isnan(SNP_alternate) ]
-    SNP_frequency = SNP_frequency[ ~ np.isnan(SNP_frequency) ]
-    SNP_area = SNP_area[ ~ np.isnan(SNP_area) ]
-    SNP_locs = SNP_locs[ ~ np.isnan(SNP_locs) ]
-    SNP_maxdist = SNP_maxdist[ ~ np.isnan(SNP_maxdist) ]
+    SNPmask = np.isnan(SNP_area)
+    SNP_annotation = SNP_annotation[ ~ SNPmask ]
+    SNP_impact = SNP_impact[ ~ SNPmask ]
+    SNP_position = SNP_position[ ~ SNPmask ]
+    SNP_alternate = SNP_alternate[ ~ SNPmask ]
+    SNP_frequency = SNP_frequency[ ~ SNPmask ]
+    SNP_area = SNP_area[ ~ SNPmask ]
+    SNP_locs = SNP_locs[ ~ SNPmask ]
+    SNP_maxdist = SNP_maxdist[ ~ SNPmask ]
 
     df = pd.DataFrame({'position':SNP_position,
                         'alternate':SNP_alternate,
@@ -255,25 +263,28 @@ else:
     for index in range(len(position)):
         position_position, position_count = at_position(index, position, ac, args.annotated)
         for alt_index in [1, 2, 3]:
-            allele_frequency, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, metadata, args.annotated)
-            if allele_frequency > 0:
-                SNP_position[array_place] = position_position
-                SNP_alternate[array_place] = alt_index
-                SNP_frequency[array_place] = allele_frequency
-                SNP_area[array_place] = area
-                SNP_locs[array_place] = nlocs
-                SNP_maxdist[array_place] = maxdist
-                
-                array_place += 1
+            if alt_index >= len(position_count):
+                pass
+            else:
+                allele_frequency, area, nlocs, maxdist = alt_allele(alt_index, index, position_count, metadata, args.annotated)
+                if allele_frequency > 0:
+                    SNP_position[array_place] = position_position
+                    SNP_alternate[array_place] = alt_index
+                    SNP_frequency[array_place] = allele_frequency
+                    SNP_area[array_place] = area
+                    SNP_locs[array_place] = nlocs
+                    SNP_maxdist[array_place] = maxdist
+                    
+                    array_place += 1
 
-
-    SNP_position = SNP_position[ ~ np.isnan(SNP_position) ]
-    SNP_alternate = SNP_alternate[ ~ np.isnan(SNP_alternate) ]
-    SNP_frequency = SNP_frequency[ ~ np.isnan(SNP_frequency) ]
-    SNP_area = SNP_area[ ~ np.isnan(SNP_area) ]
-    SNP_locs = SNP_locs[ ~ np.isnan(SNP_locs) ]
-    SNP_maxdist = SNP_maxdist[ ~ np.isnan(SNP_maxdist) ]
-
+    SNPmask = np.isnan(SNP_area)
+    SNP_position = SNP_position[ ~ SNPmask ]
+    SNP_alternate = SNP_alternate[ ~ SNPmask ]
+    SNP_frequency = SNP_frequency[ ~ SNPmask ]
+    SNP_area = SNP_area[ ~ SNPmask ]
+    SNP_locs = SNP_locs[ ~ SNPmask ]
+    SNP_maxdist = SNP_maxdist[ ~ SNPmask ]
+    
     df = pd.DataFrame({'position':SNP_position,
                         'alternate':SNP_alternate,
                         'frequency':SNP_frequency,
