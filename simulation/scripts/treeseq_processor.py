@@ -1,7 +1,7 @@
 import os, time, glob, argparse
 import pandas as pd
 import gzip
-from frequency_area import process_tree, tree_frequency_area
+from spatial_sweeps.simulation.scripts.frequency_area import process_tree, tree_frequency_area
 
 parser=argparse.ArgumentParser()
 parser.add_argument('--infile')

@@ -5,11 +5,13 @@ suppressMessages(suppressWarnings(require(npreg)))
 suppressMessages(suppressWarnings(require(splines)))
 parser <- argparse::ArgumentParser()
 parser$add_argument('--infile')
+parser$add_argument('--cutoff', type="double")
 args <- parser$parse_args()
 # what's the power to detect alleles under positive selection in our sims?
 
 
 snpdf <- fread(args$infile)
+cutoff <- args$cutoff
 
 #snpdf <- snpdf[snpdf$freq > min(snpdf$freq),]
 snpdf <- snpdf[snpdf$area > 0,]
@@ -18,7 +20,7 @@ N = 1000
 snpdf <- snpdf %>% arrange(by = freq)
 bins <- rep(seq(from = 0, to=as.integer(nrow(snpdf)/ N)), each=N)[1:nrow(snpdf)]
 snpdf$bin <- bins
-snpdf <- snpdf %>% group_by(bin) %>% mutate(Q = quantile(area, probs=0.1),
+snpdf <- snpdf %>% group_by(bin) %>% mutate(Q = quantile(area, probs=cutoff),
                                             bin_frequency = mean(freq))
 #snpdf <- snpdf %>% group_by(bin_frequency) %>% mutate(Q = mean(Q))
 #qb <- snpdf %>% reframe(Q = Q, bin_frequency=bin_frequency) %>% distinct()
@@ -42,20 +44,18 @@ nonoutlierhs <- hist(snpdf[snpdf$outlier == FALSE,]$position,
 breaks <- nonoutlierhs$breaks[1:length(nonoutlierhs$breaks)-1]
 nonoutlierhs <- data.frame(breaks=breaks, mids=nonoutlierhs$mids, nonoutlier=nonoutlierhs$counts)
 snphist <- merge(outlierhs, nonoutlierhs)
+snphist$snps <- snphist$outlier + snphist$nonoutlier
 
-snphist1 <- snphist[(snphist$nonoutlier == 0) & (snphist$outlier > 0),]
-snphist1$ratio <- snphist1$outlier
-snphist3 <- snphist[(snphist$nonoutlier > 0) & (snphist$outlier > 0),]
-snphist3$ratio <- snphist3$outlier / snphist3$nonoutlier
+emp_q <- sum(snphist$outlier)/sum(snphist$snps)
+snphist$statistic <- ((snphist$outlier / snphist$snps) - emp_q) / (sqrt((emp_q * (1-emp_q))/snphist$snps))
 
-snphist <- rbind(snphist1, snphist3)
-snphist <- snphist %>% mutate(Q = quantile(ratio, probs=0.90, na.rm=TRUE))
+snphist <- snphist %>% mutate(Q = quantile(statistic, probs=1-cutoff, na.rm=TRUE))
 
 #ggplot(snphist) + geom_line(aes(x=breaks, y=ratio)) + geom_line(aes(x=breaks, y=Q)) +
 #  geom_point(x=1e8/2, y=0.4)
 
 snphist$outlierwindow <- FALSE
-snphist[snphist$ratio >= snphist$Q,'outlierwindow'] <- TRUE
+snphist[snphist$statistic >= snphist$Q,'outlierwindow'] <- TRUE
 
 snpdf$outlierwindow <- FALSE
 for (i in seq(nrow(snphist))){

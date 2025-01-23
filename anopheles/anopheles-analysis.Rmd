@@ -1,5 +1,5 @@
 ---
-title: "anopheles-analysis"
+title: "Anopheles gambiae spatial genome analysis"
 author: "Clara Rehmann"
 date: "`r Sys.Date()`"
 output: html_document
@@ -7,7 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE, results="hide"}
 knitr::opts_chunk$set(echo = TRUE)
-#setwd("~/phd/research/spatial_sweeps-clean/anopheles_analysis")
+setwd("~/phd/research/spatial_sweeps/anopheles")
 library(tidyverse)
 library(data.table)
 library(MASS)
@@ -17,7 +17,9 @@ library(scales)
 library(quantreg)
 library(viridis)
 library(splines)
+library(stats)
 library(npreg)
+library(ggnewscale)
 load("../../../locator/data/cntrymap.Rdata")
 ```
 
@@ -51,9 +53,9 @@ how sampling areas were identified for each study to inform how I'd calculate th
 The spatially-proximate samples in Mali and Cameroon are from studies that sample transects, and take care in the design to 
 not have spatial overlap with their sampling points (ie, the areas being sampled should have distinct populations). 
 Beyond that, the approximate area sampled in a given study seems to be around 1-10 km2 (probably closer to 1 km2).
-For an allele that only occurs in one location, I'll start by approximating its spatial spread to be 1 km2.
-For alleles that occur in two locations, I'll report an area that represents a 1 km-wide transect along the distance between the two locations.
-Finally for three or more locations, I'll fit a convex hull over the space and report the area of that shape.
+To be safe, I'll only include alleles that are observed at at least three locations.
+To approximate the area this allele occupies, 
+I'll fit a convex hull over the space and report the area of that shape.
 
 # Spatial genome scan
 
@@ -61,39 +63,12 @@ Finally for three or more locations, I'll fit a convex hull over the space and r
 # code block for reading in and compiling all windowed spatial genome scan files
 rf <- function(filepath){
   df <- fread(filepath)
-  df$chromosome <- strsplit(filepath, '[.]')[[1]][1] %>% str_remove('out//')
+  df$chromosome <- strsplit(filepath, '[.]')[[1]][1] %>% str_remove('out/windowed-genome-scan//')
   return(df)
 }
 
-allsnps <- rbindlist(lapply(list.files('out/', pattern='_spatial_genome_scan.txt', full.names=TRUE), rf), fill=TRUE)
+allsnps <- rbindlist(lapply(list.files('out/windowed-genome-scan/', pattern='_spatial_genome_scan.txt', full.names=TRUE), rf), fill=TRUE)
 allsnps <- allsnps[allsnps$locs > 2,]
-# annotate genes with insecticide resistance relevance
-allsnps$IR <- 'none'
-
-irmetabolism <- fread('data/metabolic-IR-genes.tsv')
-irmetabolism$Type <- 'metabolic'
-irbehavior <- fread('data/behavioral-IR-genes.tsv')
-irbehavior$Type <- 'behavior'
-irtarget <- fread('data/target-site-IR-genes.tsv')
-irtarget$Type <- 'target site'
-ircuticle <- fread('data/cuticular-IR-genes.tsv')
-ircuticle$Type <- 'cuticular'
-
-irdf <- rbind(irmetabolism, irbehavior, irtarget, ircuticle)
-irdf$Location <- gsub(',','',irdf$Location)
-irdf <- irdf %>% tidyr::separate(Location, into=c('chromosome','start','end'))
-irdf$start <- as.numeric(irdf$start)
-irdf$end <- as.numeric(irdf$end)
-
-startpos <- irdf$start
-endpos <- irdf$end
-chroms <- irdf$chromosome
-irtype <- irdf$Type
-
-for (i in seq_along(startpos)){
-  print(i)
-  allsnps[(allsnps$position >= startpos[i]) &(allsnps$position <= endpos[i]) & (allsnps$chromosome == chroms[i]),]$IR <- irtype[i]
-}
 
 # annotate SNPs in inversions
 allsnps$INV <- 'none'
@@ -150,52 +125,39 @@ allsnps <- allsnps[allsnps$area > 0,]
 fwrite(allsnps, 'out/all_snps_annotated.txt', sep='\t')
 ```
 
+# Joint frequency-area distribution
+
+xyz about frequency vs area
+
 ```{r read-data, echo=FALSE}
 allsnps <- fread('out/all_snps_annotated.txt')
+ggplot(allsnps) + theme_bw() + 
+  geom_point(aes(x=frequency, y=area), alpha=0.005)
 ```
 
-Using this approach, I ran a spatial genome scan on the whole genome, 
-
-ending up with 
-`r sum(allsnps$area != 1.0)` SNPs that are observed in more than one spatial location
-and `r sum(allsnps$area == 1.0)` SNPs observed in just one location (approximated to an area of 1 km2)
-for a total of `r nrow(allsnps)` SNPs.
-
-
-The distribution looks like we were expecting it to, 
-and it looks like there are some SNPs that are potential outliers too :-)
-Let's do some analysis now...
-
-The first bit of messiness to deal with in these data are the inversions --
-we'd expect these to behave differently in regards to space/frequency already, 
-particularly the 2La inversion where one haplotype is fixed in the north of the sampling region
-and the other haplotype is fixed in the south 
-(that's probably what's driving the mass of spatial outlier SNPs that are under 50% frequency). 
-I'll remove SNPs in inversions from the analysis for now
-and save them in another dataframe that we can look at later:
+To identify outliers, we should apply our method separately to
+each inversion and then the rest of the genome, since the inversions
+move weirdly with regards to space and frequency and thus could mess with things.
 
 ```{r separate-inv}
 invsnps <- allsnps[allsnps$INV != 'none',]
 allsnps <- allsnps[allsnps$INV == 'none',]
 ```
 
-After removing SNPs within inversions, we now have 
-`r sum(allsnps$area != 1.0)` SNPs that are observed in more than one spatial location
-and `r sum(allsnps$area == 1.0)` SNPs observed in just one location (approximated to an area of 1 km2)
-for a total of `r nrow(allsnps)` SNPs.
-The joint distribution between frequency and area for non-inverted SNPs now looks like this:
+## Outlier SNPs
 
-```{r plot-joint-uninv, echo=FALSE}
-ggplot(allsnps) + geom_point(aes(x=frequency, y=area), alpha=0.01)
-```
+### Genomic
 
-To define which SNPs display 'spatial signatures of selection', we need to make a cutoff. I do this by adaptively binning allele frequencies, then taking the lower 0.05 quantile of each bin as a preliminary "cutoff". Because this doesn't create a smooth curve (data is sparse-ish), I then fit a model (`quantile ~ log(frequency)`) to define the curve used as an 'outlier' cutoff, which is plotted below.
+Now, let's find outliers in the joint distribution using the 
+lower tenth percentile of the distribution as the outlier cutoff:
 
 ```{r find-outliers}
 # bin frequencies by every N alleles
 N = 1000
 allsnps <- allsnps %>% arrange(by = frequency)
 bins <- rep(seq(from = 0, to=as.integer(nrow(allsnps)/ N)), each=N)[1:nrow(allsnps)]
+
+
 allsnps$bin <- bins
 allsnps <- allsnps %>% group_by(bin) %>% mutate(bin_frequency = mean(frequency))
 
@@ -213,17 +175,14 @@ allsnps[allsnps$area <= allsnps$cutoff,]$outlier <- TRUE
 # grab outliers to a dataframe
 outliersnps <- allsnps[allsnps$outlier == TRUE,]
 fwrite(outliersnps, 'out/outlier_snps_annotated.txt', sep='\t')
-nonoutliersnps <- allsnps[allsnps$outlier == FALSE,]
-fwrite(nonoutliersnps, 'out/nonoutlier_snps_annotated.txt', sep='\t')
 
 ggplot(allsnps) + geom_point(aes(x=frequency, y=area, color=outlier), alpha=0.1) + geom_line(aes(x=frequency, y=cutoff))
 ```
 
-# Outlier SNPs
+Are certain types of SNPs more likely to be found amongst outliers?
+Let's check using a hypergeometric test:
 
-## Enrichment of annotations in outliers
-
-One of the first things we can ask about these data is whether certain types of SNPS more likely to be found amongst outliers. I'll do this using a hypergeometric test:
+** I'm not sure how to get enrichment from this or if I'm calculating it right! check with peter :) **
 
 ```{r hypergeometric, echo=FALSE}
 for (ann in unique(allsnps$annotation)){
@@ -236,78 +195,9 @@ for (ann in unique(allsnps$annotation)){
 }
 ```
 
-```{r hypergeometric-test, echo=FALSE, eval=FALSE}
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$IR != 'none',])
-m <- nrow(allsnps[allsnps$IR != 'none',])
-n <- nrow(allsnps[allsnps$IR == 'none',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
+Are the genes that outlier SNPs are in enriched for any sorts of functions? I'll output Ensembl gene IDs so I can run DAVID for enrichment tests:
 
-print(paste('Insecticide resistance: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-annotations_list = c("splice_region_variant&intron_variant",
-                     "splice_region_variant",
-                    "splice_region_variant&synonymous_variant",
-                     "splice_acceptor_variant&intron_variant",
-                    "splice_donor_variant&intron_variant",
-                    "splice_region_variant&stop_retained_variant",
-                    "splice_region_variant&non_coding_transcript_exon_variant",
-                    "splice_acceptor_variant&splice_region_variant&intron_variant"
-                    )
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation %in% annotations_list,])
-m <- nrow(allsnps[allsnps$annotation %in% annotations_list,])
-n <- nrow(allsnps[! allsnps$annotation %in% annotations_list,])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('Splice-site mutations: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$impact %in% c('HIGH'),])
-m <- nrow(allsnps[allsnps$impact %in% c('HIGH'),])
-n <- nrow(allsnps[! allsnps$impact %in% c('HIGH'),])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('High-impact mutations: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'intragenic_variant',])
-m <- nrow(allsnps[allsnps$annotation == 'intragenic_variant',])
-n <- nrow(allsnps[! allsnps$annotation == 'intragenic_variant',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('intragenic variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'intergenic_region',])
-m <- nrow(allsnps[allsnps$annotation == 'intergenic_region',])
-n <- nrow(allsnps[! allsnps$annotation == 'intergenic_region',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('intergenic variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'synonymous_variant',])
-m <- nrow(allsnps[allsnps$annotation == 'synonymous_variant',])
-n <- nrow(allsnps[! allsnps$annotation == 'synonymous_variant',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('synonymous variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'missense_variant',])
-m <- nrow(allsnps[allsnps$annotation == 'missense_variant',])
-n <- nrow(allsnps[! allsnps$annotation == 'missense_variant',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('missense variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'missense_variant' & allsnps$IR != 'none',])
-m <- nrow(allsnps[allsnps$annotation == 'missense_variant' & allsnps$IR != 'none',])
-n <- nrow(allsnps[! (allsnps$annotation == 'missense_variant' & allsnps$IR != 'none'),])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('missense IR variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-```
-
-Are the genes that outlier SNPs are in enriched for any sorts of functions? I'll output Ensembl gene IDs so I can run DAVID for enrichment testts:
-
-```{r outlier-snp-genes}
+```{r outlier-snp-genes-DAVID}
 NSoutliergenes <- allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'missense_variant',]$`Gene ID`
 NSoutliergenes <- as.list(unique(NSoutliergenes[NSoutliergenes != 'none']))
 fwrite(NSoutliergenes, 'out/NS_outlier_genes.txt', sep='\n')
@@ -325,732 +215,320 @@ hifioutliergenes <- as.list(unique(hifioutliergenes[hifioutliergenes != 'none'])
 fwrite(hifioutliergenes, 'out/hifioutlierSNP_genes.txt', sep='\n')
 ```
 
+### Inversions
 
-## Windowed outlier density {.tabset}
+Now, I'll do the same for each of the inversions:
 
-There are still a *ton* (`r sum(allsnps$outlier)`) of outlier SNPs to deal with, so we'll need a more intelligent way of identifying 
-ones that could be sweeping. I'll try to do this by counting up the number of outliers in each window
-along the chromosome, then identifying windows with an excess of outliers. 
-
-First let's look at the distribution of outliers along each chromosome:
-
-```{r windowed-outliers, echo=FALSE, results='asis'}
-snphist <- function(snpframe, chromosome){
-  hs <- hist(snpframe[snpframe$chromosome == chromosome,]$position, 
-             breaks=seq(from=0, to=max(snpframe[snpframe$chromosome == chromosome,]$position)+100000, by=100000))
-  breaks <- hs$breaks[1:length(hs$breaks)-1]
-  df <- data.frame(breaks=breaks, mids=hs$mids, count=hs$counts, chromosome=chromosome)
-  return(df)
-}
-
-# dataframe that bins chromosome's outlier SNPs by position
-h2L <- snphist(outliersnps, '2L')
-cat("\n")
-h2R<- snphist(outliersnps, '2R')
-cat("\n")
-cat("\n")
-h3L <- snphist(outliersnps, '3L')
-cat("\n")
-h3R <- snphist(outliersnps, '3R')
-cat("\n")
-hX <- snphist(outliersnps, 'X')
-outliersnphist <- rbind(h2L, h2R, h3L, h3R, hX)
-```
-
-And the number of non-outliers in each window as well:
-
-```{r ratio-to-nonoutlier, echo=FALSE, results='asis'}
-# dataframe that bins chromosome's nonoutlier SNPs by position
-h2L <- snphist(nonoutliersnps, '2L')
-cat("\n")
-h2R<- snphist(nonoutliersnps, '2R')
-cat("\n")
-h3L <- snphist(nonoutliersnps, '3L')
-cat("\n")
-h3R <- snphist(nonoutliersnps, '3R')
-cat("\n")
-hX <- snphist(nonoutliersnps, 'X')
-nonoutliersnphist <- rbind(h2L, h2R, h3L, h3R, hX)
-```
-
-We're interested in regions of the genome that have more outliers relative to non-outliers, 
-so I'll focus on windows above the 90th percentile of outlier/non-outlier ratios (plotted as the horizontal line below):
-
-```{r window-comparison, echo=FALSE}
-outliersnphist$type <- 'outlier'
-nonoutliersnphist$type <- 'nonoutlier'
-snphist <- rbind(outliersnphist, nonoutliersnphist)
-snphist <- snphist %>% pivot_wider(names_from=type,
-                        values_from=count)
-snphist <- na.omit(snphist)
-
-snphist1 <- snphist[(snphist$nonoutlier == 0) & (snphist$outlier > 0),]
-snphist1$ratio <- snphist1$outlier
-snphist2 <- snphist[(snphist$nonoutlier == 0) & (snphist$outlier == 0),]
-snphist2$ratio <- 0
-snphist3 <- snphist[(snphist$nonoutlier > 0) & (snphist$outlier > 0),]
-snphist3$ratio <- snphist3$outlier / snphist3$nonoutlier
-snphist <- rbind(snphist1, snphist2, snphist3)
-
-#snphist$ratio <- snphist$outlier / snphist$nonoutlier
-snphist <- snphist %>% group_by(chromosome) %>% mutate(Q = quantile(ratio, probs=0.90, na.rm=TRUE))
-
-ggplot(snphist) + geom_line(aes(x=mids, y=ratio)) + geom_line(aes(x=mids, y=Q))+ facet_wrap(vars(chromosome))
-```
-
-# Functional annotation of outliers
- 
-These are what we'll call our "OUTLIER WINDOWS" going forward. We're interested in SNPs that are within these outlier windows (and further, outlier SNPs *within* these outlier windows),
-so I'll quickly tag each of those in the `allsnps` dataframe. 
-
-```{r window-outliers}
-# windows with an excess of outliers
-outlierwindows <- snphist[snphist$ratio > snphist$Q,]
-outlierwindows <- na.omit(outlierwindows)
-outlierwindows$startpos <- outlierwindows$breaks
-outlierwindows$endpos <- outlierwindows$breaks + (100000 - 1)
-# annotate SNPs that are within those windows
-allsnps$outlierwindow <- FALSE
-
-for (i in seq(nrow(outlierwindows))){
-  sdf <- outlierwindows[i,]
-  allsnps[(allsnps$position >= sdf$startpos) & (allsnps$position <= sdf$endpos) & (allsnps$chromosome == sdf$chromosome),]$outlierwindow <- TRUE
-}
-```
-
-Finally, we'll write out the genes within outlier windows, and the genes with outlier SNPs *within* outlier windows, so we can look for functional enrichments:
-
-```{r outlier-window-genes, eval=FALSE}
-outlierwindowgenes <- allsnps[allsnps$outlierwindow == TRUE,]$`Gene ID`
-outlierwindowgenes <- as.list(unique(outlierwindowgenes[outlierwindowgenes != 'none']))
-fwrite(outlierwindowgenes, 'out/outlierwindow_genes.txt', sep='\n')
-
-outlierwindowSNPgenes <- allsnps[allsnps$outlierwindow == TRUE & allsnps$outlier == TRUE,]$`Gene ID`
-outlierwindowSNPgenes <- as.list(unique(outlierwindowSNPgenes[outlierwindowSNPgenes != 'none']))
-fwrite(outlierwindowSNPgenes, 'out/outlierwindowSNP_genes.txt', sep='\n')
-```
-
-# The same thing, but for inversions {.tabset}
-
-```{r inv, echo=FALSE, results='asis'}
-########################################
-### identify outlier SNPs in inversion sections of the genome
-########################################
+```{r inversion-outliers, echo=FALSE, results='asis'}
 dir.create('out/inversion', showWarnings = FALSE)
-for (inv in c('2Rb','2Rc','2La')){
-    cat(paste0('## ', inv))
-    snpdf <- invsnps[invsnps$INV == inv,]
-
-    ### fit curve for outliers
-    
-    # bin frequencies by every N alleles
-    N = 50
-    snpdf <- snpdf %>% arrange(by = frequency)
-    bins <- rep(seq(from = 0, to=as.integer(nrow(snpdf)/ N)), each=N)[1:nrow(snpdf)]
-    snpdf$bin <- bins
-    
-    snpdf <- snpdf %>% dplyr::group_by(bin) %>% dplyr::mutate(Q = quantile(area, probs=0.1))
-    
-    # lower Q quantile for each frequency bin
-    m_reml <- ss(snpdf$frequency, snpdf$Q, method='REML', spar=0.4)
-    p_reml <- predict(m_reml, snpdf$frequency)
-    snpdf$cutoff <- p_reml$y
-    snpdf$outlier <- FALSE
-    snpdf[snpdf$area <= snpdf$cutoff,]$outlier <- TRUE
-    
-    # save dataframes
-    outliersnps <- snpdf[snpdf$outlier == TRUE,]
-    fwrite(outliersnps, paste0('out/inversion/',inv,'_outlier_snps_annotated.txt'), sep='\t')
-    nonoutliersnps <- snpdf[snpdf$outlier == FALSE,]
-    fwrite(nonoutliersnps, paste0('out/inversion/',inv,'_nonoutlier_snps_annotated.txt'), sep='\t')
-    
-    print(ggplot() + geom_point(data=snpdf, mapping=aes(x=frequency, y=area, color=outlier), alpha=0.01) + geom_line(data=snpdf, aes(x=frequency, y=cutoff)) + scale_y_continuous(limits=c(0, NA)))
-    
-    ### hypergeometric test for enrichment in outliers
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$IR != 'none',])
-    m <- nrow(snpdf[snpdf$IR != 'none',])
-    n <- nrow(snpdf[snpdf$IR == 'none',])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('Insecticide resistance: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    annotations_list = c("splice_region_variant&intron_variant",
-                         "splice_region_variant",
-                        "splice_region_variant&synonymous_variant",
-                         "splice_acceptor_variant&intron_variant",
-                        "splice_donor_variant&intron_variant",
-                        "splice_region_variant&stop_retained_variant",
-                        "splice_region_variant&non_coding_transcript_exon_variant",
-                        "splice_acceptor_variant&splice_region_variant&intron_variant"
-                        )
-    
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$annotation %in% annotations_list,])
-    m <- nrow(snpdf[snpdf$annotation %in% annotations_list,])
-    n <- nrow(snpdf[! snpdf$annotation %in% annotations_list,])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('Splice-site mutations: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$impact %in% c('HIGH'),])
-    m <- nrow(snpdf[snpdf$impact %in% c('HIGH'),])
-    n <- nrow(snpdf[! snpdf$impact %in% c('HIGH'),])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('High-impact mutations: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$annotation == 'intragenic_variant',])
-    m <- nrow(snpdf[snpdf$annotation == 'intragenic_variant',])
-    n <- nrow(snpdf[! snpdf$annotation == 'intragenic_variant',])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('intragenic variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$annotation == 'intergenic_region',])
-    m <- nrow(snpdf[snpdf$annotation == 'intergenic_region',])
-    n <- nrow(snpdf[! snpdf$annotation == 'intergenic_region',])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('intergenic variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$annotation == 'synonymous_variant',])
-    m <- nrow(snpdf[snpdf$annotation == 'synonymous_variant',])
-    n <- nrow(snpdf[! snpdf$annotation == 'synonymous_variant',])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('synonymous variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$annotation == 'missense_variant',])
-    m <- nrow(snpdf[snpdf$annotation == 'missense_variant',])
-    n <- nrow(snpdf[! snpdf$annotation == 'missense_variant',])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('missense variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    
-    q <- nrow(snpdf[snpdf$outlier == TRUE & snpdf$annotation == 'missense_variant' & snpdf$IR != 'none',])
-    m <- nrow(snpdf[snpdf$annotation == 'missense_variant' & snpdf$IR != 'none',])
-    n <- nrow(snpdf[! (snpdf$annotation == 'missense_variant' & snpdf$IR != 'none'),])
-    k <- nrow(snpdf[snpdf$outlier == TRUE,])
-    
-    cat(paste('missense IR variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-    
-    outlierinvgenes <- snpdf[snpdf$outlier == TRUE,]$`Gene ID`
-    outlierinvgenes <- as.list(unique(outlierinvgenes[outlierinvgenes != 'none']))
-    fwrite(outlierinvgenes, paste0('out/inversion/',inv,'outlierSNP_genes.txt'), sep='\n')
-    
-    hifioutlierinvgenes <- snpdf[snpdf$outlier == TRUE & snpdf$frequency >= 0.75,]$`Gene ID`
-    hifioutlierinvgenes <- as.list(unique(hifioutliergenes[hifioutliergenes != 'none']))
-    fwrite(hifioutlierinvgenes, paste0('out/inversion/',inv,'hifioutlierSNP_genes.txt'), sep='\n')
-    
-    ### outlier vs. nonoutlier density along each chromosome
-    
-    invshphist <- function(snpframe, inv){
-      hs <- hist(snpframe[snpframe$INV == inv,]$position, 
-                 breaks=seq(from=0, to=max(snpframe[snpframe$INV == inv,]$position)+100000, by=100000))
-      breaks <- hs$breaks[1:length(hs$breaks)-1]
-      df <- data.frame(breaks=breaks, mids=hs$mids, count=hs$counts, inv=inv)
-      return(df)
-    }
-    
-    # dataframe that bins chromosome's outlier SNPs by position
-    h0 <- invshphist(outliersnps, inv)
-    fwrite(h0, paste0('out/inversion/',inv,'outlier_snp_100000kbwindows.txt'), sep='\t')
-    assign(paste0('outlier_snp_',inv), h0)
-    
-    # dataframe that bins chromosome's nonoutlier SNPs by position
-    h1 <- invshphist(nonoutliersnps, inv)
-    fwrite(h1, paste0('out/inversion/',inv,'nonoutlier_snp_100000kbwindows.txt'), sep='\t')
-    assign(paste0('nonoutlier_snp_',inv), h1)
-    
-    h0$type <- 'outlier'
-    h1$type <- 'nonoutlier'
-    invsnphist <- rbind(h0, h1)
-    invsnphist <- invsnphist %>% pivot_wider(names_from=type,
-                        values_from=count)
-    invsnphist <- na.omit(invsnphist)
-    
-    invsnphist1 <- invsnphist[(invsnphist$nonoutlier == 0) & (invsnphist$outlier > 0),]
-    invsnphist1$ratio <- 0
-    invsnphist2 <- invsnphist[(invsnphist$nonoutlier == 0) & (invsnphist$outlier == 0),]
-    invsnphist2$ratio <- 0
-    invsnphist3 <- invsnphist[(invsnphist$nonoutlier > 0) & (invsnphist$outlier > 0),]
-    invsnphist3$ratio <- invsnphist3$outlier / invsnphist3$nonoutlier
-    invsnphist1$ratio <- max(invsnphist3$ratio)
-    invsnphist <- rbind(invsnphist1, invsnphist2, invsnphist3)
-    assign(paste0('ratio_snp_',inv), invsnphist)
-    
-    assign(paste0('invsnps_',inv), snpdf)
-    cat("\n")
-}
-
-
 Rbstart <- 18575300
 Rbstop <- 26767588
-ratio_snp_2Rb <- ratio_snp_2Rb[ratio_snp_2Rb$breaks >= Rbstart & ratio_snp_2Rb$breaks <= Rbstop,]
-ratio_snp_2Rb <- ratio_snp_2Rb %>% mutate(Q = quantile(ratio, probs=0.9, na.rm=TRUE))
-fwrite(ratio_snp_2Rb, paste0('out/inversion/2Rbratio_snp_100000kbwindows.txt'), sep='\t')
 Rcstart <- 26750000
 Rcstop <- 31473000
-ratio_snp_2Rc <- ratio_snp_2Rc[ratio_snp_2Rc$breaks >= Rcstart & ratio_snp_2Rc$breaks <= Rcstop,]
-ratio_snp_2Rc <- ratio_snp_2Rc %>% mutate(Q = quantile(ratio, probs=0.9, na.rm=TRUE))
-fwrite(ratio_snp_2Rc, paste0('out/inversion/2Rcratio_snp_100000kbwindows.txt'), sep='\t')
 Lastart <- 20524058
 Lastop <- 42165532
-ratio_snp_2La <- ratio_snp_2La[ratio_snp_2La$breaks >= Lastart & ratio_snp_2La$breaks <= Lastop,]
-ratio_snp_2La <- ratio_snp_2La %>% mutate(Q = quantile(ratio, probs=0.9, na.rm=TRUE))
-fwrite(ratio_snp_2La, paste0('out/inversion/2Laratio_snp_100000kbwindows.txt'), sep='\t')
-
-
-invhist <- rbind(ratio_snp_2La, ratio_snp_2Rb, ratio_snp_2Rc)
-invhist$chromosome <- substr(invhist$inv, 1, 2)
-ggplot(invhist) + geom_line(aes(x=mids, y=ratio)) + geom_line(aes(x=mids, y=Q))+ facet_wrap(vars(inv))
-
-invsnps <- rbind(invsnps_2La, invsnps_2Rb, invsnps_2Rc)
-fwrite(invsnps, 'out/all_inv_snps.txt', sep='\t')
-```
-
-Again, these are what we'll call our "OUTLIER WINDOWS" going forward, and we're interested in outlier SNPs that are *within* these outlier windows,
-so I'll quickly tag each of those in the `invsnps` dataframe. 
-
-```{r window-inv-outliers, echo=FALSE}
-# windows with an excess of outliers
-invoutlierwindows <- invhist[invhist$ratio > invhist$Q,]
-invoutlierwindows <- na.omit(invoutlierwindows)
-invoutlierwindows$startpos <- invoutlierwindows$breaks
-invoutlierwindows$endpos <- invoutlierwindows$breaks + (100000 - 1)
-# annotate outlier SNPs that are within those windows
-invsnps$outlierwindow <- FALSE
-
-for (i in seq(nrow(invoutlierwindows))){
-  sdf <- invoutlierwindows[i,]
-  invsnps[(invsnps$position >= sdf$startpos) & (invsnps$position <= sdf$endpos) & (invsnps$INV == sdf$inv) & (invsnps$outlier == TRUE),]$outlierwindow <- TRUE
-}
-```
-
-```{r inv-window-gene-annotation, eval=FALSE, echo=FALSE}
 for (inv in c('2Rb','2Rc','2La')){
-  invoutlierwindowgenes <- invsnps[invsnps$outlierwindow == TRUE & invsnps$INV==inv,]$`Gene ID`
-  invoutlierwindowgenes <- as.list(unique(invoutlierwindowgenes[invoutlierwindowgenes != 'none']))
-  fwrite(invoutlierwindowgenes, paste0('out/inversion/',inv,'outlierwindow_genes.txt'), sep='\n')
+  cat(paste0("#### ",inv),'\n\n')
+  invdf <- invsnps[invsnps$INV == inv,]
   
-  invoutlierwindowSNPgenes <- invsnps[invsnps$outlierwindow == TRUE & invsnps$outlier == TRUE & invsnps$INV==inv,]$`Gene ID`
-  invoutlierwindowSNPgenes <- as.list(unique(invoutlierwindowSNPgenes[invoutlierwindowSNPgenes != 'none']))
-  fwrite(invoutlierwindowSNPgenes, paste0('out/inversion/',inv,'outlierwindowSNP_genes.txt'), sep='\n')
-}
-```
-
-
-
-```{r read-inv-gene-annotation, echo=FALSE, eval=FALSE}
-invoutlierwindowgenes <- fread('out/inversion/inversion_outlier_window_genes.txt')
-```
-
-Now that I have each of the SNPs placed in their genes, I'll get information about how those SNPs change the sequence:
-
-```{r vectorbase-snp-annotation, eval=FALSE, echo=FALSE}
-# gene names
-values = invoutlierwindowgenes$ensembl_gene_id
-
-# grab variant annotations for each of these genes
-invfunctionaloutlier_BM <- getBM(attributes=c('ensembl_gene_id','chromosome_name','variation_name','allele','minor_allele','transcript_location','peptide_location','peptide_shift','synonymous_status'),
-                               values = values,
-                               filters = 'ensembl_gene_id',
-                               mart = mart)
-invfunctionaloutlier_BM <- invfunctionaloutlier_BM %>% separate(variation_name, c('tmp','chromosome','position','reference','alt'), sep='_')
-invfunctionaloutlier_BM$position <- as.numeric(invfunctionaloutlier_BM$position)
-# merge to just our functional outlier SNPs
-invoutlierwindowgenes <- left_join(invoutlierwindowgenes, invfunctionaloutlier_BM, by=c('ensembl_gene_id'='ensembl_gene_id',
-                                                         'chromosome'='chromosome',
-                                                         'position'='position'))
-
-
-# gene names
-values = invoutlierwindowgenes$ensembl_gene_id
-
-# grab variant annotations for each of these genes
-#invfunctionaloutlier_BM <- getBM(attributes=c('ensembl_gene_id','chromosome_name','variation_name','allele','minor_allele','transcript_location','peptide_location','peptide_shift','synonymous_status'),
- #                              values = values,
-#                               filters = 'ensembl_gene_id',
-#                               mart = mart)
-#invfunctionaloutlier_BM <- invfunctionaloutlier_BM %>% separate(variation_name, c('tmp','chromosome','position','reference','alt'), sep='_')
-#invfunctionaloutlier_BM$position <- as.numeric(invfunctionaloutlier_BM$position)
-
-#invfunctionaloutlier_BM
-
-
-# merge to just our functional outlier SNPs
-#invoutlierwindowsnps <- left_join(invsnps[invsnps$ensembl_gene_id != 'none',], invfunctionaloutlier_BM, 
- #                              by=c('ensembl_gene_id'='ensembl_gene_id',
-#                                    'chromosome'='chromosome',
-#                                    'position'='position'))
-```
-
-# All together, now
-
-```{r mergeallsnps}
-allsnps_merged <- rbind(invsnps, allsnps)
-
-
-
-fwrite(allsnps_merged, 'out/all_snps_INVincluded_annotated.txt')
-allsnps <- allsnps_merged
-
-ggplot () +
-geom_line(data=allsnps_merged, aes(x=frequency, y=cutoff, group=INV, color=INV))
-```
-
-## Outliers
-
-```{r hypergeometric-all, echo=FALSE}
-for (ann in unique(allsnps$annotation)){
-  q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == ann,])
-  m <- nrow(allsnps[allsnps$annotation == ann,])
-  n <- nrow(allsnps[! allsnps$annotation == ann,])
-  k <- nrow(allsnps[allsnps$outlier == TRUE,])
+  #### find outliers
   
-  print(paste(ann, ': p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-}
+  # bin frequencies by every N alleles
+  N = 50
+  invdf <- invdf %>% arrange(by = frequency)
+  bins <- rep(seq(from = 0, to=as.integer(nrow(invdf)/ N)), each=N)[1:nrow(invdf)]
+  invdf$bin <- bins
+  # 10th percentile cutoff
+  invdf <- invdf %>% dplyr::group_by(bin) %>%
+                     dplyr::mutate(Q = quantile(area, probs=0.1))
+  # fit spline to ID outlier cutoff
+  m_reml <- ss(invdf$frequency, invdf$Q, method='REML', spar=0.4)
+  p_reml <- predict(m_reml, invdf$frequency)
+  invdf$cutoff <- p_reml$y
+  # ID outliers
+  invdf$outlier <- FALSE
+  invdf[invdf$area <= invdf$cutoff,]$outlier <- TRUE
+  # plot it
+  print(ggplot(invdf) + geom_point(aes(x=frequency, y=area, color=outlier), alpha=0.1) +   
+    geom_line(aes(x=frequency, y=cutoff)))
+  print("\n")
+  # save dataframe
+  invoutliersnps <- invdf[invdf$outlier == TRUE,]
+  fwrite(invoutliersnps, paste0('out/inversion/',inv,'_outlier_snps_annotated.txt'), sep='\t')
+  assign(paste0("invdf",inv), invdf)
 
-for (imp in unique(allsnps$impact)){
-  q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$impact == imp,])
-  m <- nrow(allsnps[allsnps$impact == imp,])
-  n <- nrow(allsnps[! allsnps$impact == imp,])
-  k <- nrow(allsnps[allsnps$outlier == TRUE,])
+  # hypergeometric tests
+  for (ann in unique(invdf$annotation)){
+    q <- nrow(invdf[invdf$outlier == TRUE & invdf$annotation == ann,])
+    m <- nrow(invdf[invdf$annotation == ann,])
+    n <- nrow(invdf[! invdf$annotation == ann,])
+    k <- nrow(invdf[invdf$outlier == TRUE,])
+    
+    print(paste(ann, ': p = ', phyper(q, m, n, k, lower.tail=FALSE)))
+  NSoutliergenes <- invdf[invdf$outlier == TRUE & invdf$annotation == 'missense_variant',]$`Gene ID`
+  NSoutliergenes <- as.list(unique(NSoutliergenes[NSoutliergenes != 'none']))
+  fwrite(NSoutliergenes, paste0('out/inversion/',inv,'_NS_outlier_genes.txt'), sep='\n')
   
-  print(paste(imp, ': p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-}
-```
-
-## Window outliers
-
-```{r hypergeometric-all-windows, echo=FALSE}
-for (ann in unique(allsnps$annotation)){
-  q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$outlierwindow==TRUE & allsnps$annotation == ann,])
-  m <- nrow(allsnps[allsnps$annotation == ann,])
-  n <- nrow(allsnps[! allsnps$annotation == ann,])
-  k <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$outlierwindow==TRUE,])
+  SYoutliergenes <- invdf[invdf$outlier == TRUE & invdf$annotation == 'synonymous_variant',]$`Gene ID`
+  SYoutliergenes <- as.list(unique(SYoutliergenes[SYoutliergenes != 'none']))
+  fwrite(SYoutliergenes, paste0('out/inversion/',inv,'SY_outlier_genes.txt'), sep='\n')
   
-  print(paste(ann, ': p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-}
-
-for (imp in unique(allsnps$impact)){
-  q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$outlierwindow==TRUE & allsnps$impact == imp,])
-  m <- nrow(allsnps[allsnps$impact == imp,])
-  n <- nrow(allsnps[! allsnps$impact == imp,])
-  k <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$outlierwindow==TRUE,])
+  outliergenes <- invdf[invdf$outlier == TRUE,]$`Gene ID`
+  outliergenes <- as.list(unique(outliergenes[outliergenes != 'none']))
+  fwrite(outliergenes, paste0('out/inversion/',inv,'outlierSNP_genes.txt'), sep='\n')
   
-  print(paste(imp, ': p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-}
-```
-
-```{r hypergeometric-all-test, echo=FALSE, eval=FALSE}
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$IR != 'none',])
-m <- nrow(allsnps[allsnps$IR != 'none',])
-n <- nrow(allsnps[allsnps$IR == 'none',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('Insecticide resistance: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-annotations_list = c("splice_region_variant&intron_variant",
-                     "splice_region_variant",
-                    "splice_region_variant&synonymous_variant",
-                     "splice_acceptor_variant&intron_variant",
-                    "splice_donor_variant&intron_variant",
-                    "splice_region_variant&stop_retained_variant",
-                    "splice_region_variant&non_coding_transcript_exon_variant",
-                    "splice_acceptor_variant&splice_region_variant&intron_variant"
-                    )
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation %in% annotations_list,])
-m <- nrow(allsnps[allsnps$annotation %in% annotations_list,])
-n <- nrow(allsnps[! allsnps$annotation %in% annotations_list,])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('Splice-site mutations: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$impact %in% c('HIGH'),])
-m <- nrow(allsnps[allsnps$impact %in% c('HIGH'),])
-n <- nrow(allsnps[! allsnps$impact %in% c('HIGH'),])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('High-impact mutations: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'intragenic_variant',])
-m <- nrow(allsnps[allsnps$annotation == 'intragenic_variant',])
-n <- nrow(allsnps[! allsnps$annotation == 'intragenic_variant',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('intragenic variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'intergenic_region',])
-m <- nrow(allsnps[allsnps$annotation == 'intergenic_region',])
-n <- nrow(allsnps[! allsnps$annotation == 'intergenic_region',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('intergenic variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'synonymous_variant',])
-m <- nrow(allsnps[allsnps$annotation == 'synonymous_variant',])
-n <- nrow(allsnps[! allsnps$annotation == 'synonymous_variant',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('synonymous variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'missense_variant',])
-m <- nrow(allsnps[allsnps$annotation == 'missense_variant',])
-n <- nrow(allsnps[! allsnps$annotation == 'missense_variant',])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('missense variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-
-
-q <- nrow(allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'missense_variant' & allsnps$IR != 'none',])
-m <- nrow(allsnps[allsnps$annotation == 'missense_variant' & allsnps$IR != 'none',])
-n <- nrow(allsnps[! (allsnps$annotation == 'missense_variant' & allsnps$IR != 'none'),])
-k <- nrow(allsnps[allsnps$outlier == TRUE,])
-
-print(paste('missense IR variants: p = ', phyper(q, m, n, k, lower.tail=FALSE)))
-```
-
-```{r joint-plot, echo=FALSE}
-annotations_list = c('missense_variant',
-                     "5_prime_UTR_premature_start_codon_gain_variant",
-                     'stop_gained',
-                     'stop_lost',
-                     "start_lost",
-                     'missense_variant&splice_region_variant',
-                     'stop_lost&splice_region_variant',
-                     'stop_gained&splice_region_variant', 
-                     'start_lost',"stop_retained_variant",
-                     '5_prime_UTR_premature_start_codon_gain_variant',
-                     "initiator_codon_variant")
-
-ggplot() + theme_classic() +
-  geom_point(data=allsnps, mapping=aes(x=frequency, y=area), alpha=0.01) + 
-  geom_point(data=allsnps[allsnps$annotation %in% annotations_list,], mapping=aes(x=frequency, y=area, color=INV, size=outlier)) + scale_size_manual(c(0.1, 1), values=c(FALSE,TRUE)) + 
-  geom_line(data=allsnps, aes(x=frequency, y=cutoff, group=INV, color=INV)) + 
-  scale_y_continuous(limits=c(0, NA))
-```
-
-
-```{r all-snp-window, echo=FALSE}
-invhist$chromosome <- substr(invhist$inv,1,2)
-invhist$INV <- invhist$inv
-
-allsnphist <- rbind(snphist, invhist)
-fwrite(allsnphist, 'out/all_snp_histogram.txt', sep='\t')
-
-ggplot() + geom_line(data = allsnphist, aes(x=mids, y=ratio, group=INV, color=INV)) + geom_line(data = allsnphist,aes(x=mids, y=Q, group=INV, color=INV))+ facet_wrap(vars(chromosome))
-```
-
-# Functional enrichments
-
-## Genes with outlier SNPs {.tabset}
-
-Having identified genes associated with outlier SNPs, I'll start to look into functional enrichments in these lists of genes using DAVID.
-First, let's look at functional enrichment of genes associated with all outlier SNPs. 
-
-As a side note here, you can only do DAVID functional clustering on 3000 genes or fewer, 
-and we have `r length(outliergenes)` genes associated with outlier SNPs. 
-To help with interpretation of functional enrichments, I'll run functional clustering on 
-only the genes that are associated with significantly enriched terms. 
-I won't be able to interpret the p values from this, but it'll help me get an idea of what sorts of 
-functions are enriched within this dataset.
-
-```{r read-DAVID-snp, results='asis', echo=FALSE}
-cat("### enriched annotations for genes with outlier SNPs")
-cat("\n")
-
-snpdavid <- fread('out/all_outlierSNPgenes_DAVID.txt')
-snpdavid <- snpdavid[snpdavid$Category != 'UP_SEQ_FEATURE',]
-
-snpsignif <- snpdavid[snpdavid$Benjamini < 0.05,]
-snpsignif <- paste0(snpsignif$Genes, collapse=", ")
-snpsignif <- strsplit(snpsignif, ',')
-snpsignif <- lapply(snpsignif, str_trim)
-snpsignif <- snpsignif[[1]]
-snpsignif <- unique(snpsignif)
-fwrite(as.list(snpsignif), paste0('out/signifigant_outlierSNPgenes_fromDAVID.txt'), sep='\n')
-
-knitr::kable(snpdavid[snpdavid$Benjamini < 0.05,] %>% dplyr::select(-Genes), caption='enriched annotations for genes with outlier SNPs')
-cat("\n")
-```
-
-```{r snp-DAVID-enrich, results='asis', echo=FALSE}
-header.true <- function(df) {
-  names(df) <- as.character(unlist(df[1,]))
-  df[-1,]
-}
-
-snpdavidenrichment <- fread('out/significant_outlierSNPgenes_DAVIDenrichment.txt', fill=TRUE, sep='\t')
-clusters <- which(grepl("Annotation Cluster", snpdavidenrichment$V1))
-for (i in seq(length(clusters))){
-  enrch <- toString(snpdavidenrichment[clusters[i],'V2'])
-  if (i == length(clusters)){ dtb <- snpdavidenrichment[seq(clusters[i]+1,nrow(snpdavidenrichment)),] }
-  else { dtb <- snpdavidenrichment[seq(clusters[i]+1,clusters[i+1]-1),] }
-  dtb <- header.true(dtb)
-  
-  if ((sum(as.numeric(dtb$Benjamini) < 0.1, na.rm=TRUE) > 0)){
-    cat(paste0("### Annotation cluster ", i))
-    cat("\n")
-    print(knitr::kable(dtb %>% dplyr::select(-Genes), caption=enrch))
-    cat("\n")
+  hifioutliergenes <- invdf[invdf$outlier == TRUE & invdf$frequency >= 0.75,]$`Gene ID`
+  hifioutliergenes <- as.list(unique(hifioutliergenes[hifioutliergenes != 'none']))
+  fwrite(hifioutliergenes, paste0('out/inversion/',inv,'hifioutlierSNP_genes.txt'), sep='\n')
   }
 }
 ```
 
-## Genes with high-frequency outlier SNPs {.tabset}
-
-Since our method has the most power when SNPs are at higher frequency, we'll restrict our analysis to genes with outlier SNPs that are at or above 75% frequency.
-
-```{r hifisnp-DAVID-enrich, results='asis', echo=FALSE}
-header.true <- function(df) {
-  names(df) <- as.character(unlist(df[1,]))
-  df[-1,]
-}
-
-snpdavidenrichment <- fread('out/all_hifioutlierSNPgenes_DAVIDenrichment.txt', fill=TRUE, sep='\t')
-clusters <- which(grepl("Annotation Cluster", snpdavidenrichment$V1))
-for (i in seq(length(clusters))){
-  enrch <- toString(snpdavidenrichment[clusters[i],'V2'])
-  if (i == length(clusters)){ dtb <- snpdavidenrichment[seq(clusters[i]+1,nrow(snpdavidenrichment)),] }
-  else { dtb <- snpdavidenrichment[seq(clusters[i]+1,clusters[i+1]-1),] }
-  dtb <- header.true(dtb)
+```{r merge-dfs, echo=FALSE}
+allsnps <- rbind(allsnps, invdf2La, invdf2Rb, invdf2Rc)
+```
   
-  if ((sum(as.numeric(dtb$Benjamini) < 0.1, na.rm=TRUE) > 0)){
-    cat(paste0("### Annotation cluster ", i))
-    cat("\n")
-    print(knitr::kable(dtb %>% dplyr::select(-Genes), caption=enrch))
-    cat("\n")
-  }
-}
-```
+# Windowed outlier density
 
-## Genes in outlier windows {.tabset}
+Since using just our outlier cutoff gives us a *ton* of SNPs to sort through,
+we'll look at the distribution of outliers across the genome using a windowed analysis.
+Our test statistic will be a z score that represents the proportion of outliers relative to 
+the number of SNPs found within a window. 
+To account for regions with low recombination, which will only have a few SNPs and thus could skew our statistic,
+we'll mask regions with a recombination rate below 1.5 cM/Mb.
 
-Next, we'll do the same thing, but for genes that are within outlier windows:
-
-```{r read-DAVID-window, results='asis', echo=FALSE}
-windowdavid <- fread('out/all_outlierwindowgenes_DAVID.txt')
-cat("### enriched annotations for genes within outlier windows SNPs")
-cat("\n")
-knitr::kable(windowdavid[windowdavid$Benjamini < 0.05,] %>% dplyr::select(-Genes), caption='enriched annotations for genes within outlier windows')
-cat("\n")
-```
-
-```{r window-DAVID-enrich, results='asis', echo=FALSE}
-windowdavidenrichment <- fread('out/all_outlierwindowgenes_DAVIDenrichment.txt', fill=TRUE, sep='\t')
-clusters <- which(grepl("Annotation Cluster", windowdavidenrichment$V1))
-for (i in seq(length(clusters))){
-  enrch <- toString(windowdavidenrichment[clusters[i],'V2'])
-  if (i == length(clusters)){ dtb <- windowdavidenrichment[seq(clusters[i]+1,nrow(windowdavidenrichment)),] }
-  else { dtb <- windowdavidenrichment[seq(clusters[i]+1,clusters[i+1]-1),] }
-  dtb <- header.true(dtb)
-  if ((sum(as.numeric(dtb$Benjamini) < 0.1, na.rm=TRUE) > 0)){
-    cat(paste0("### Annotation cluster ", i))
-    cat("\n")
-    print(knitr::kable(dtb %>% dplyr::select(-Genes), caption=enrch))
-    cat("\n")
-  }
-}
-```
-
-## Genes with outlier SNPs in outlier windows {.tabset}
-
-Finally genes with outlier SNPs within outlier windows:
-
-```{r read-DAVID-windowsnp, results='asis', echo=FALSE}
-windowSNPdavid <- fread('out/all_outlierwindowSNPgenes_DAVID.txt')
-cat("### enriched annotations for genes with outlier SNPs within outlier windows")
-cat("\n")
-knitr::kable(windowSNPdavid[windowSNPdavid$Benjamini < 0.05,] %>% dplyr::select(-Genes), caption='enriched annotations for genes with outlier SNPs within outlier windows')
-cat("\n")
-```
-
-```{r windowsnp-DAVID-enrich, results='asis', echo=FALSE}
-windowSNPdavidenrichment <- fread('out/all_outlierwindowSNPgenes_DAVIDenrichment.txt', fill=TRUE, sep='\t')
-clusters <- which(grepl("Annotation Cluster", windowSNPdavidenrichment$V1))
-for (i in seq(length(clusters))){
-  enrch <- toString(windowSNPdavidenrichment[clusters[i],'V2'])
-  if (i == length(clusters)){ dtb <- windowSNPdavidenrichment[seq(clusters[i]+1,nrow(windowSNPdavidenrichment)),] }
-  else { dtb <- windowSNPdavidenrichment[seq(clusters[i]+1,clusters[i+1]-1),] }
-  dtb <- header.true(dtb)
-  if ((sum(as.numeric(dtb$Benjamini) < 0.1, na.rm=TRUE) > 0)){
-    cat(paste0("### Annotation cluster ", i))
-    cat("\n")
-    print(knitr::kable(dtb %>% dplyr::select(-Genes), caption=enrch))
-    cat("\n")
-  }
-}
-```
-
-# Functional consequences
-
-Finally, let's check out if any of the outlier SNPs in outlier windows have 
-functional consequences for their coding sequences. I'll save out the missense variants and use
-the Ag1000g API to get their coding consequences, and also get their UniProt IDs from VectorBase. 
-
-```{r missense_variants, echo=FALSE}
-missenseoutliers <- allsnps[allsnps$outlier == TRUE & 
-                              allsnps$outlierwindow == TRUE & 
-                              allsnps$annotation == 'missense_variant',]
-fwrite(missenseoutliers, 'out/missense_outlier_SNPs.txt', sep='\t')
-fwrite(as.list(missenseoutliers$`Gene ID`), 'out/missense_outlier_SNP_geneIDs.txt', sep='\n')
-vbgene <- fread('out/vectorbase_geneID_uniprot.txt')
-missenseoutliers <- left_join(missenseoutliers, vbgene)
-missenseoutliers <- missenseoutliers %>% mutate(uniprot_id = strsplit(`UniProt ID(s)`, ',')) %>% unnest(uniprot_id)
-fwrite(as.list(unique(missenseoutliers$uniprot_id)), 'out/missense_outlier_uniprot_IDs.txt', sep='\n')
-coding <- fread('out/missense_outlierwindowSNP_coding.txt')
-missenseoutliers <- merge(missenseoutliers, coding)
-
-knitr::kable(missenseoutliers)
-```
-
-Do any of these missense mutations alter protein structure? I ran ThermoMPNN on the genes
-with protein structures available at AlphaFold to assess how stability changes due to these mutations:
-
-```{r missense-thermo, echo=FALSE}
-rf <- function(filepath){
-  df <- fread(filepath)
-  df$uniprot_id <- strsplit((strsplit(filepath, '/')[[1]][3] %>% str_remove('.csv')), '-')[[1]][2]
-  df$AA_change <- df$Mutation
+```{r calculate-windows, echo=FALSE}
+snphist <- function(snpframe){
+  ohs <- hist(snpframe[snpframe$outlier==TRUE,]$position,
+              breaks=seq(from=round(min(snpframe$position)), to=max(snpframe$position)+100000, by=100000))
+  nhs <- hist(snpframe[snpframe$outlier==FALSE,]$position,
+              breaks=seq(from=round(min(snpframe$position)), to=max(snpframe$position)+100000, by=100000))
+  breaks <- ohs$breaks[1:length(ohs$breaks)-1]
+  df <- data.frame(breaks=breaks, mids=ohs$mids, outliers=ohs$counts, nonoutliers=nhs$counts)
+  
+  #hs <- hist(snpframe$position, 
+            # breaks=seq(from=0, to=max(snpframe$position)+100000, by=100000))
+  #breaks <- hs$breaks[1:length(hs$breaks)-1]
+  #df <- data.frame(breaks=breaks, mids=hs$mids, count=hs$counts)
   return(df)
 }
 
-thermo <- rbindlist(lapply(list.files('out/thermompnn-out', full.names=TRUE), rf), fill=TRUE)
-missenseoutliers <- merge(missenseoutliers, thermo, by=c('uniprot_id', 'AA_change'))
-fwrite(missenseoutliers, 'out/missense_outliers_thermompnn.txt')
+
+for (chr in c('2L','2R','3L','3R','X')){
+  if (chr == '2L'){
+    l2La <- allsnps[allsnps$chromosome==chr & allsnps$INV=='none' & allsnps$position<Lastart,]
+    l2LaH <- snphist(l2La)
+    l2LaH$INV <- 'none'
+    l2LaH$chromosome <- chr
+    i2La <- allsnps[allsnps$INV == '2La' & allsnps$position >=Lastart & allsnps$position <= Lastop,]
+    i2LaH <- snphist(i2La)
+    i2LaH$INV <- '2La'
+    i2LaH$chromosome <- chr
+    r2La <- allsnps[allsnps$chromosome==chr & allsnps$INV=='none' & allsnps$position>Lastop,]
+    r2LaH <- snphist(r2La)
+    r2LaH$INV <- 'none'
+    r2LaH$chromosome <- chr
+    
+    assign(paste0('all',chr,'H'), rbind(l2LaH, i2LaH, r2LaH))
+  }
+  else if (chr == '2R'){
+    l2Rb <- allsnps[allsnps$chromosome==chr & allsnps$INV=='none' & allsnps$position<Rbstart,]
+    l2RbH <- snphist(l2Rb)
+    l2RbH$INV <- 'none'
+    l2RbH$chromosome <- chr
+    i2Rb <- allsnps[allsnps$INV == '2Rb' & allsnps$position >= Rbstart & allsnps$position <= Rbstop,]
+    i2RbH <- snphist(i2Rb)
+    i2RbH$INV <- '2Rb'
+    i2RbH$chromosome <- chr
+    i2Rc <- allsnps[allsnps$INV == '2Rc' & allsnps$position >= Rcstart & allsnps$position <= Rcstop,]
+    i2RcH <- snphist(i2Rc)
+    i2RcH$INV <- '2Rc'
+    i2RcH$chromosome <- chr
+    r2Rc <- allsnps[allsnps$chromosome==chr & allsnps$INV=='none' & allsnps$position>Rcstop,]
+    r2RcH <- snphist(r2Rc)
+    r2RcH$chromosome <- chr
+    r2RcH$INV <- 'none'
+    
+     assign(paste0('all',chr,'H'), rbind(l2RbH, i2RbH, i2RcH, r2RcH))
+  }
+  else{
+    tmpdf <- allsnps[allsnps$chromosome==chr,]
+    tmpdf <- snphist(tmpdf)
+    tmpdf$INV <- 'none'
+    tmpdf$chromosome <- chr
+    assign(paste0('all',chr,'H'), tmpdf)
+  }
+}
+
+
 ```
 
-## Stabilizing mutations
 
-```{r stabilizing, echo=FALSE}
-knitr::kable(missenseoutliers[missenseoutliers$`ddG (kcal/mol)` < 0,] %>% dplyr::select(c('frequency','area','chromosome','INV','Gene ID','Product Description','ddG (kcal/mol)')) %>% arrange(`ddG (kcal/mol)`))
+```{r merge-dfs-1, echo=FALSE}
+allsnphist <- rbind(all2LH, all2RH, all3LH, all3RH, allXH)
+
+# calculate outlier statistic
+
+allsnphist$snps <- allsnphist$outliers + allsnphist$nonoutliers
+allsnphist$statistic <- NA
+for (I in c('none','2La','2Rb','2Rc')){
+  Imask <- allsnphist$INV == I
+  emp_q <- sum(allsnphist[Imask,]$outliers) / sum(allsnphist[Imask,]$snps)
+  st <- ((allsnphist[Imask,]$outliers / allsnphist[Imask,]$snps) - emp_q) / (sqrt((emp_q * (1-emp_q))/allsnphist[Imask,]$snps))
+  allsnphist[Imask,]$statistic <- st
+}
+
+allsnphist$ends <- allsnphist$breaks + (100000 - 1)
 ```
 
-## Destabilizing mutations
+```{r rec-map, echo=FALSE}
+read_recomb <- function(chromosome){
+  df <- fread(paste0('data/relernn_data/agam.',chromosome,'.CAR.rmap.txt.gz'))
+  df <- df %>% arrange(end)
+  df$start <- 0
+  for (i in seq(2, nrow(df))) {
+    df[i, 'start'] <- df[i-1,'end']
+  }
+  df$bp <- df$end - df$start
+  return(df)
+}
 
-```{r destabilizing, echo=FALSE}
-knitr::kable(missenseoutliers[missenseoutliers$`ddG (kcal/mol)` > 0,] %>% dplyr::select(c('frequency','area','chromosome','INV','Gene ID','Product Description','ddG (kcal/mol)')) %>% arrange(-`ddG (kcal/mol)`))
+for (c in c('2L','2R','3L','3R')){
+  df <- read_recomb(c)
+  assign(paste0('r',c), df)
+}
+
+allsnphist$mean_cMMb <- 0
+for (i in seq(nrow(allsnphist))) {
+    st <- allsnphist[i,'breaks'][[1]]
+    en <- allsnphist[i,'ends'][[1]]
+    c <- allsnphist[i,'chromosome'][[1]]
+    if (c=='X') next
+    rcdf <- get(paste0('r',c))
+    left <- rcdf[(rcdf$end > st & rcdf$end < en & rcdf$start < st),]
+    left$bp <- left$end - st
+    right <- rcdf[(rcdf$start < en & rcdf$end > en & rcdf$end > st),]
+    right$bp <- en - right$start
+    overlap <- rbind(left, rcdf[(rcdf$start > st & rcdf$end < en),],right)
+    allsnphist[i,]$mean_cMMb <- weighted.mean(overlap$cMMb, overlap$bp)
+}
+
+recsnphist <- allsnphist
+recsnphist$statistic[recsnphist$mean_cMMb < 1.5] <- NaN
+#recsnphist <- allsnphist[allsnphist$mean_cMMb > 1.5,]
+recsnphist <- recsnphist[recsnphist$chromosome != 'X',]
+
+#ggplot(recsnphist) + theme_bw() +
+#  geom_line(aes(x=mids, y=statistic, color=INV), size=0.5) +  facet_wrap(vars(chromosome))
 ```
 
-## Start/stop variants
+Cool! Now let's set another 90th percentile cutoff:
 
-Finally, let's check whether there's any SNPs that change where coding sequences stop or start:
+```{r window-cutoff, echo=FALSE}
+recsnphist <- recsnphist %>% group_by(INV) %>% mutate(Q = quantile(statistic, 0.9, na.rm=TRUE)) #%>% ungroup()
 
-```{r transcript_variants, echo=FALSE}
-knitr::kable(allsnps[allsnps$outlier == TRUE & allsnps$outlierwindow == TRUE & 
-          (allsnps$annotation == "5_prime_UTR_premature_start_codon_gain_variant" |
-           allsnps$annotation == "stop_gained"),] %>% dplyr::select(c('annotation','frequency','area','chromosome','INV','Gene ID','Product Description')))
+ggplot(recsnphist) + theme_bw() +
+  geom_line(mapping=aes(x=mids, y = statistic, color=INV), size=0.5) +  
+  geom_hline(mapping=aes(yintercept=Q, color=INV)) +
+  facet_wrap(vars(chromosome))
 ```
 
-# Comparison to other scans for selection
+```{r read-final-}
+allsnps <- fread('out/all_snps_genome_scan_annotated.txt')
+allsnphist <- fread('out/all_snps_windowed_genome_scan_annotated.txt')
+recsnphist <- fread('out/high_recombination_windowed_genome_scan_annotated.txt')
+```
 
-## partialSHIC
+```{r tag-outliers, echo=FALSE, eval=FALSE}
+recsnphist <- recsnphist[!is.na(recsnphist$statistic),]
+recsnphist$nstat_outlier <- FALSE
+recsnphist[recsnphist$statistic > recsnphist$Q,]$nstat_outlier <- TRUE
 
-```{r read-shic, echo=FALSE}
-library(stringr)
+allsnps$nstat_outlier <- FALSE
+allsnps$nstat <- 0
+for (i in seq(nrow(recsnphist))){
+  allsnps[(allsnps$chromosome == recsnphist[i,]$chromosome &
+         allsnps$position >= recsnphist[i,]$breaks &
+         allsnps$position <= recsnphist[i,]$ends),]$nstat <- recsnphist[i,]$statistic
+  if (recsnphist[i, 'nstat_outlier'] == TRUE) { 
+    allsnps[(allsnps$chromosome == recsnphist[i,]$chromosome &
+             allsnps$position >= recsnphist[i,]$breaks &
+             allsnps$position <= recsnphist[i,]$ends &
+             allsnps$outlier == TRUE),]$nstat_outlier <- TRUE
+  }
+}
+```
 
+```{r enrichment-test-windows, echo=FALSE}
+for (inversion in c('none','2La','2Rc','2Rb')){
+  print(inversion)
+  for (ann in unique(allsnps$annotation)){
+    q <- nrow(allsnps[allsnps$nstat_outlier == TRUE & allsnps$annotation == ann & allsnps$INV == inversion,])
+    m <- nrow(allsnps[allsnps$annotation == ann & allsnps$INV == inversion,])
+    n <- nrow(allsnps[! allsnps$annotation == ann & allsnps$INV == inversion,])
+    k <- nrow(allsnps[allsnps$nstat_outlier == TRUE & allsnps$INV == inversion,])
+    
+    print(paste(ann, ': p = ', phyper(q, m, n, k, lower.tail=FALSE)))
+  }
+}
+```
+
+
+```{r save-final, eval=FALSE}
+fwrite(allsnps, 'out/all_snps_genome_scan_annotated.txt')
+fwrite(allsnphist, 'out/all_snps_windowed_genome_scan_annotated.txt')
+fwrite(recsnphist, 'out/high_recombination_windowed_genome_scan_annotated.txt')
+```
+
+```{r read-final}
+allsnps <- fread('out/all_snps_genome_scan_annotated.txt')
+allsnphist <- fread('out/all_snps_windowed_genome_scan_annotated.txt')
+recsnphist <- fread('out/high_recombination_windowed_genome_scan_annotated.txt')
+```
+
+## How does this statistic compare to other scans for selection?
+
+### IHS
+
+IHS is commonly used to ID instances of selection...
+
+```{r read-ihsc}
+# code block for reading in ihs tsv files
+rf <- function(filepath){
+  df <- fread(filepath)
+  windowsize <- strsplit(filepath, '_')[[1]][7] %>% str_remove('kb') %>% as.numeric()
+  df$start <- round(df$window - windowsize/2)
+  df$stop <- round(df$window + windowsize/2)
+  return(df)
+}
+ihs <- rbindlist(lapply(list.files('data/ihs12/', full.names = TRUE), rf), fill=TRUE)
+```
+
+```{r compare-ihsc}
+allsnphist$IHS2 <- 0
+for (i in seq(nrow(allsnphist))) {
+    st <- allsnphist[i,'breaks'][[1]]
+    en <- allsnphist[i,'ends'][[1]]
+    c <- allsnphist[i,'chromosome'][[1]]
+    left <- ihs[(ihs$stop > st & ihs$stop < en & ihs$start < st),]
+    left$bp <- left$stop - st
+    middle <- ihs[(ihs$start > st & ihs$stop < en),]
+    middle$bp <- middle$stop - middle$start
+    right <- ihs[(ihs$start < en & ihs$stop > en & ihs$stop > st),]
+    right$bp <- en - right$start
+    overlap <- rbind(left, middle ,right)
+    allsnphist[i,]$IHS2 <- weighted.mean(overlap$h12, overlap$bp)
+}
+
+ggplot(allsnphist) + geom_point(aes(x=statistic, y=IHS2)) +
+  geom_smooth(aes(x=statistic, y=IHS2), method='lm')
+
+print(summary(lm(IHS2~statistic, allsnphist)))
+```
+
+### diploSHIC
+
+```{r read-shic}
 # code block for reading in shic bed files
 rf <- function(filepath){
   df <- fread(filepath, header=FALSE)
@@ -1077,319 +555,413 @@ shic[(shic$class %in% sweep_classes),'sweep'] <- 1
 shic$chromosome <- shic$chromosome %>% str_remove('chr')
 ```
 
-```{r shichist, echo=FALSE}
-# is there a SHIC sweep observed in a window?
-allsnphist$shic <- 0
+```{r compare-shic}
+allsnphist$SHIC <- 0
 for (i in seq(nrow(allsnphist))){
   wd <- allsnphist[i,]
   sp <- sum(shic[shic$chromosome == wd$chromosome & shic$start >= (wd$breaks) & shic$stop <= (wd$breaks + 1e5),]$sweep)
-  allsnphist[i,'shic'] <- sp
+  allsnphist[i,'SHIC'] <- sp
 }
 
+ggplot(allsnphist) + geom_point(aes(x=statistic, y=SHIC)) +
+  geom_smooth(aes(x=statistic, y=SHIC), method='lm')
 
-allsnphist$windowoutlier <- 0
-allsnphist[allsnphist$ratio >= allsnphist$Q,]$windowoutlier <- 1
-allsnphist$shicsweep <- 0
-allsnphist[allsnphist$shic > 0,]$shicsweep <- 1
-
-cont <- table(allsnphist$windowoutlier, allsnphist$shicsweep)
-chisq.test(cont)
+print(summary(lm(SHIC~statistic, allsnphist)))
 ```
 
-## IHS
+# Functional consequences
 
-```{r read-ihsc, echo=FALSE}
-# code block for reading in ihs tsv files
+Are the genes that outlier SNPs are in enriched for any sorts of functions? I'll output Ensembl gene IDs so I can run DAVID for enrichment tests:
+
+```{r outlier-snp-genes}
+NSoutliergenes <- allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'missense_variant',]$`Gene ID`
+NSoutliergenes <- as.list(unique(NSoutliergenes[NSoutliergenes != 'none']))
+fwrite(NSoutliergenes, 'out/all_NS_outlier_genes.txt', sep='\n')
+
+SYoutliergenes <- allsnps[allsnps$outlier == TRUE & allsnps$annotation == 'synonymous_variant',]$`Gene ID`
+SYoutliergenes <- as.list(unique(SYoutliergenes[SYoutliergenes != 'none']))
+fwrite(SYoutliergenes, 'out/all_SY_outlier_genes.txt', sep='\n')
+
+outliergenes <- allsnps[allsnps$outlier == TRUE,]$`Gene ID`
+outliergenes <- as.list(unique(outliergenes[outliergenes != 'none']))
+fwrite(outliergenes, 'out/all_outlierSNP_genes.txt', sep='\n')
+
+hifioutliergenes <- allsnps[allsnps$outlier == TRUE & allsnps$frequency >= 0.75,]$`Gene ID`
+hifioutliergenes <- as.list(unique(hifioutliergenes[hifioutliergenes != 'none']))
+fwrite(hifioutliergenes, 'out/all_hifioutlierSNP_genes.txt', sep='\n')
+```
+
+```{r windowoutlier-snp-genes}
+wNSoutliergenes <- allsnps[allsnps$nstat_outlier == TRUE & allsnps$annotation == 'missense_variant',]$`Gene ID`
+wNSoutliergenes <- as.list(unique(wNSoutliergenes[wNSoutliergenes != 'none']))
+fwrite(wNSoutliergenes, 'out/all_wNS_outlier_genes.txt', sep='\n')
+
+wSYoutliergenes <- allsnps[allsnps$nstat_outlier == TRUE & allsnps$annotation == 'synonymous_variant',]$`Gene ID`
+wSYoutliergenes <- as.list(unique(wSYoutliergenes[wSYoutliergenes != 'none']))
+fwrite(wSYoutliergenes, 'out/all_wSY_outlier_genes.txt', sep='\n')
+
+woutliergenes <- allsnps[allsnps$nstat_outlier == TRUE,]$`Gene ID`
+woutliergenes <- as.list(unique(woutliergenes[woutliergenes != 'none']))
+fwrite(woutliergenes, 'out/all_woutlierSNP_genes.txt', sep='\n')
+
+whifioutliergenes <- allsnps[allsnps$nstat_outlier == TRUE & allsnps$frequency >= 0.75,]$`Gene ID`
+whifioutliergenes <- as.list(unique(whifioutliergenes[whifioutliergenes != 'none']))
+fwrite(whifioutliergenes, 'out/all_whifioutlierSNP_genes.txt', sep='\n')
+```
+
+
+To broaden our search to non-genic SNPs, I'll look at annotations for outlier regions of the genome...
+
+```{r gff}
+library(stringi)
+ann <- fread('data/VectorBase-68_AgambiaePEST.gff')
+colnames(ann) <- c('seqname', 'source','feature','start','end','score','strand','frame','attribute')
+#ann$ID <- 
+atts <- strsplit(ann$attribute, split = ';')
+IDs <- lapply(atts, function(l) l[[1]] %>% str_replace("ID=",''))
+ann$ID <- unlist(IDs)
+
+descs <- lapply(atts, function(l) l[stri_detect_fixed(l, "description=")] %>% str_replace("description=",''))
+ann$description <- descs
+ann$ends <- ann$end
+ann$starts <- ann$start
+recsnphist[recsnphist$nstat_outlier,c('chromosome','breaks','ends')]
+
+```
+
+```{r interactive-plotly-nstatoutlier}
+library(plotly)
+
+p <- ggplot() + theme_bw() + 
+    geom_point(data=allsnps[allsnps$nstat_outlier == TRUE,], aes(text=paste0('gene: ',`Gene ID`,'\n','description: ',`Product Description`), x=frequency, y=area, color=annotation, size=nstat, group=`Gene ID`)) + scale_size_continuous(range=c(0.1, 2), trans='log10') + #scale_alpha_manual(values=c(0.25, 0.5)) +
+  theme(legend.position='none')
+
+ggplotly(p, width=1000, height=700)
+```
+
+```{r interactive-plotly-outlier}
+library(plotly)
+
+p <- ggplot() + theme_bw() + 
+    geom_point(data=allsnps[allsnps$outlier == TRUE & allsnps$nstat_outlier == FALSE,], aes(text=paste0('gene: ',`Gene ID`,'\n','description: ',`Product Description`), x=frequency, y=area, color=annotation, size=nstat, group=`Gene ID`)) + scale_size_continuous(range=c(0.1, 2), trans='log10') + #scale_alpha_manual(values=c(0.25, 0.5)) +
+  theme(legend.position='none')
+
+ggplotly(p, width=1000, height=700)
+```
+
+# IR SNPs
+
+## VGSC
+
+```{r vgsc}
+library(DT)
+
+
+# The locus occurs on chromosome arm 2L from position 2,358,158 to 2,431,617.
+chr <- '2L' # chromosome
+ist <- 2358158 # locus start
+isp <- 2431617 # locus stop
+
+
+DT::datatable(allsnps[allsnps$chromosome==chr &
+          allsnps$position >= ist &
+          allsnps$position <= isp &
+          (allsnps$nstat_outlier | allsnps$outlier),])
+```
+
+## GSTE
+
+```{r gste}
+#The locus occurs on chromosome arm 3R from position 28,591,663 to 28,602,280.
+chr <- '3R' # chromosome
+ist <- 28591663 # locus start
+isp <- 28602280 # locus stop
+
+
+DT::datatable(allsnps[allsnps$chromosome==chr &
+          allsnps$position >= ist &
+          allsnps$position <= isp &
+          (allsnps$nstat_outlier | allsnps$outlier),])
+```
+
+## Cyp6p
+
+```{r cyp6p}
+# The locus occurs on chromosome arm 2R from position 28,480,576 to 28,505,816.
+
+# pushing back start to include Solute Carrier Family 8
+chr <- '2R' # chromosome
+ist <- 28420677 # locus start
+isp <- 28505816 # locus stop
+
+
+DT::datatable(allsnps[allsnps$chromosome==chr &
+          allsnps$position >= ist &
+          allsnps$position <= isp &
+          (allsnps$nstat_outlier | allsnps$outlier),])
+```
+
+## Ace1
+
+```{r ace1}
+# The locus occurs on chromosome arm 2R from position 3,484,107 to 3,495,790.
+chr <- '2R' # chromosome
+ist <- 3484107 # locus start
+isp <- 3495790 # locus stop
+
+
+DT::datatable(allsnps[allsnps$chromosome==chr &
+          allsnps$position >= ist &
+          allsnps$position <= isp &
+          (allsnps$nstat_outlier | allsnps$outlier),])
+```
+
+## Rdl
+
+```{r rdl}
+# The locus occurs on chromosome arm 2L from position 25,363,652 to 25,434,556.
+chr <- '2L' # chromosome
+ist <- 25363652 # locus start
+isp <- 25434556 # locus stop
+
+
+DT::datatable((allsnps[allsnps$chromosome==chr &
+          allsnps$position >= ist &
+          allsnps$position <= isp &
+          (allsnps$nstat_outlier | allsnps$outlier),]))
+```
+
+## Cyp9k1
+
+```{r cyp9k1}
+# The locus occurs on chromosome X from position 15,240,572 to 15,242,864.
+chr <- 'X' # chromosome
+ist <- 15240572 # locus start
+isp <- 15242864 # locus stop
+
+
+DT::datatable(allsnps[allsnps$chromosome==chr &
+          allsnps$position >= ist &
+          allsnps$position <= isp &
+          (allsnps$nstat_outlier | allsnps$outlier),])
+```
+
+## Tep1
+
+```{r tep1}
+# The locus occurs on chromosome arm 3L from position 11,202,091 to 11,206,882.
+chr <- '3L' # chromosome
+ist <- 11202091 # locus start
+isp <- 11206882 # locus stop
+
+
+DT::datatable(allsnps[allsnps$chromosome==chr &
+          allsnps$position >= ist &
+          allsnps$position <= isp &
+          (allsnps$nstat_outlier | allsnps$outlier),])
+```
+
+
+
+```{r}
+library(DT)
+
+DT::datatable(allsnps[allsnps$outlier==TRUE,], class='cell-border stripe', rownames=F, filter='top',
+              editable=TRUE, extensions='Buttons', options=list(
+                dom='Bfrtip', buttons=c('copy','csv','pdf')
+              ))
+```
+
+
+# Nonsynonymous SF outliers
+
+Lastly, let's use ThermoMPNN to investigate if any nonsynonymous SF outliers have impacts on protein stability. 
+I used VectorBase to get UniProt IDs for each gene containing nonsyn SF outliers, then downloaded their PDB files from AlphaFold and ran ThermoMPNN to do deep mutational scanning on each protein.
+From the MalariaGen Python API, I also grabbed the specific amino acid change associated with each of these nonsynonymous SNPs (using `ag1000g-altalleles.ipynb`), which I'll use to line up ThermoMPNN results with our outliers.
+
+Here's all the nonsynonymous SF outlier SNPs that change protein stability:
+
+```{r write-uniprots, echo=FALSE}
+df <- fread('out/nonsynonymous-outliers-uniprot.txt')
+uniprots <- unique(strsplit(paste0(df$`UniProt ID(s)`, collapse=','), ',')[[1]])
+uniprots <- uniprots[uniprots != 'N/A']
+uniprots <- as.list(uniprots)
+fwrite(uniprots, 'out/missense_outlier_snp_uniprotID.txt', sep='\n')
+```
+
+```{r merge-thermo-data, echo=FALSE}
+up <- df %>% separate(col='UniProt ID(s)', into='UniProt ID(s)', sep=',')
+missense_df <- merge(up, allsnps[allsnps$outlier & allsnps$annotation == 'missense_variant',])
+missense_df <- missense_df[missense_df$`UniProt ID(s)` != 'N/A',]
+snp_alleles <- fread('out/outlier_snps_ancestral_derived.txt')
+snp_alleles <- snp_alleles %>% dplyr::select(-c(V1))
+snp_alleles$source_id <- snp_alleles$source_id_x
+missense_df <- merge(missense_df, snp_alleles[,c('source_id', 'ancestral_allele', 'derived_allele', 'AA_change','position','alternate','chromosome')])
 rf <- function(filepath){
   df <- fread(filepath)
-  windowsize <- strsplit(filepath, '_')[[1]][7] %>% str_remove('kb') %>% as.numeric()
-  df$start <- round(df$window - windowsize/2)
-  df$stop <- round(df$window + windowsize/2)
+  df$`UniProt ID(s)` <- strsplit((strsplit(filepath, '/')[[1]][3] %>% str_remove('.csv')), '-')[[1]][2]
+  df$AA_change <- df$Mutation
   return(df)
 }
-ihs <- rbindlist(lapply(list.files('data/ihs12/', full.names = TRUE), rf), fill=TRUE)
-```
 
-stats test plan - 
-1. identify IHS peaks beyond 0.95 percentile
-2. ID those peaks as sweeps
-3. chi square test between IHS and spatial outliers
+thermo <- rbindlist(lapply(list.files('out/thermompnn-out', full.names=TRUE), rf), fill=TRUE)
 
-```{r compare-ihs, echo=FALSE}
-ihs <- ihs %>% group_by(chromosome) %>% mutate(Q = quantile(h12, probs=0.95, na.rm=TRUE))
-ihs$outlier <- 0
-ihs[ihs$h12 > ihs$Q,]$outlier <- 1
+missense_df <- left_join(missense_df, thermo, by=c('UniProt ID(s)' = 'UniProt ID(s)', 'AA_change' = 'AA_change'))
+missense_df <- missense_df[!is.na(missense_df$`ddG (kcal/mol)`) & missense_df$`ddG (kcal/mol)` != 0,]
+DT::datatable(missense_df[,c('Gene ID', 'Product Description', 'frequency', 'area', 'ddG (kcal/mol)', 'AA_change', 'nstat_outlier', 'nstat')] %>% arrange(-`ddG (kcal/mol)`), class='cell-border stripe', rownames=F, filter='top',
+              editable=TRUE, extensions='Buttons', options=list(
+                dom='Bfrtip', buttons=c('copy','csv','pdf')
+              ))
 
-# is there a IHS outlier observed in a window?
-allsnphist$ihs <- 0
-for (i in seq(nrow(allsnphist))){
-  wd <- allsnphist[i,]
-  sp <- sum(ihs[ihs$chromosome == ihs$chromosome & (ihs$start >= wd$breaks) & ihs$stop <= (wd$breaks + 1e5),]$outlier)
-  if (sp > 0){  allsnphist[i,'ihs'] <- 1}
-  else {  allsnphist[i,'ihs'] <- 0}
-}
-
-cont <- table(allsnphist$windowoutlier, allsnphist$ihs)
-chisq.test(cont)
-```
-
-# Stuff for the paper!
-
-## Figures
-
-```{r figure-setup}
-library(ggnewscale)
-library(viridis)
-pal = c('#182706',
-        '#27301D',
-        '#32413A',
-        '#384A4C', 
-        '#375B69',
-        '#2E6D74',
-        '#24AA87',
-        '#25C589',
-        '#2CD38B',
-        '#36E48D',
-        '#54EC87',
-        '#66ED87',
-        '#7CEA89',
-        '#99ED95',
-        '#ADEB9E')
-palgen = colorRampPalette(pal)
-palgen_rev = colorRampPalette(rev(pal))
-colgen = colorRamp(pal)
-allsnpsplot <- fread('out/all_snps_INVincluded_annotated.txt')
-```
-
-## Anopheles joint distribution
-
-```{r sampling-locs-fig, echo=FALSE}
-metadata <- fread('~/phd/research/spatial-genome-scan/anopheles_analysis/data/admixture_k1_metadata.txt')
-metadata_count <- metadata %>% dplyr::group_by(x, y) %>% dplyr::count()
-ag_map <- ggplot()+coord_map(projection = "mollweide",
-                   xlim=c(min(na.omit(c(metadata$x)))-2,
-                          max(na.omit(c(metadata$x)))+5),
-                   ylim=c(min(na.omit(c(metadata$y)))-5,
-                          max(na.omit(c(metadata$y)))+5))+
-  theme_classic()+theme(axis.title = element_blank(),
-                        legend.title = element_text(size=8),
-                        legend.text=element_text(size=6),
-                        axis.text=element_text(size=6),
-                        legend.box = "horizontal",
-  )+
-  geom_polygon(data=fortify(map),aes(x=long,y=lat,group=group),fill='white',color='black',lwd=0.2)+
-  geom_count(data=metadata_count,aes(x=x,y=y,fill=n,size=n),color='black',pch=21) +
-  scale_fill_viridis(option='C', guide = "legend")
-
-ag_map
+fwrite(missense_df, 'out/missense_snps_stabilitychange.txt', sep='\t')
 ```
 
 
-```{r jdist-fig}
-allsnpsplot$plot_annotation <- 'none'
-allsnpsplot[(allsnpsplot$annotation == '3_prime_UTR_variant' |
-            allsnpsplot$annotation == '5_prime_UTR_variant' |
-            allsnpsplot$annotation == '5_prime_UTR_premature_start_codon_gain_variant' |
-            allsnpsplot$annotation == 'intron_variant' |
-            allsnpsplot$annotation == 'splice_region_variant&intron_variant' |
-            allsnpsplot$annotation == 'downstream_gene_variant' |
-            allsnpsplot$annotation == 'upstream_gene_variant'),'plot_annotation'] <- 'Noncoding variant'
-allsnpsplot[(allsnpsplot$annotation == 'missense_variant' |
-               allsnpsplot$annotation == 'stop_gained'),'plot_annotation'] <- 'Nonsynonymous variant'
-allsnpsplot[(allsnpsplot$annotation == 'synonymous_variant' |
-               allsnpsplot$annotation == 'splice_region_variant&synonymous_variant'),'plot_annotation'] <- 'Synonymous variant'
-allsnpsplot$plot_annotation <- factor(allsnpsplot$plot_annotation, levels=c('none','Noncoding variant','Synonymous variant','Nonsynonymous variant'))
+I'm gonna try to manually annotate these guys now by merging them with their GO terms (from VectorBase) and hand-downloaded IR candidate genes from the MalariaGen selection atlas...
 
-allsnpsplot$INV <- factor(allsnpsplot$INV, levels=c('2La','2Rb','2Rc','none'))
+```{r}
+df <- fread('out/nonsynonymous_vectorbase_goterms.txt')
+missense_df <- missense_df[,c('source_id',
+                              'position',
+                              "alternate",
+                              "chromosome",
+                              "Gene ID",
+                              "Product Description",
+                              "Genomic Location (Gene)",
+                              "Gene Type",              
+                              "UniProt ID(s)",
+                              "Gene Name or Symbol",
+                              "gene_source_id",
+                              "frequency",
+                              "annotation",
+                              "impact",
+                              "area",
+                              "locs",                
+                              "maxdist",
+                              "INV",
+                              "bin",
+                              "bin_frequency",
+                              "Q",
+                              "cutoff",
+                              "outlier",
+                              "nstat_outlier",
+                              "nstat",
+                              "ancestral_allele",
+                              "derived_allele",
+                              "AA_change",
+                              "Mutation",
+                              "ddG (kcal/mol)",
+                              "pos",
+                              "wtAA",
+                              "mutAA")]
 
+missense_go <- full_join(df, missense_df)
+irdf <- rbind(fread('data/cuticular-IRcandidates.tsv'),
+              fread('data/behavioral-IRcandidates.tsv'),
+              fread('data/ts-IRcandidates.tsv'),
+              fread('data/metabolic-IRcanidates.tsv'))
+irdf$`Gene ID` <- irdf$Gene
+missense_ir <- left_join(missense_go, irdf)
+#fwrite(missense_ir, 'out/missense_goterms_manual.txt', sep='\t')
+missense_ir <- fread('data/missense_goterms_manual.tsv', sep='\t') %>% dplyr::select(-(last_col()))
 
-# dataframe for outlier SNPs within outlier windows (ignoring intergenic regions)
-outlier_notIG <- allsnpsplot[(allsnpsplot$outlier == TRUE & allsnpsplot$outlierwindow == TRUE & allsnpsplot$annotation != 'intergenic_region'),]
-outlier_notIG$impact <- factor(outlier_notIG$impact, levels=c('MODIFIER', 'LOW', 'MODERATE', 'HIGH'))
-outlier_notIG$plot_annotation <- factor(outlier_notIG$plot_annotation, levels=c('Noncoding variant','Synonymous variant','Nonsynonymous variant'))
+missense_ir
+```
 
-# dataframe for missense outlier SNPs that change protein structure/stability
-missenseoutliersplot <- missenseoutliers[missenseoutliers$`ddG (kcal/mol)` != 0,] %>% dplyr::select(c('frequency','area','impact','annotation','INV','position','chromosome'))
-missenseoutliersplot$bin <- 0
-missenseoutliersplot <- rbind(missenseoutliersplot, (allsnps[(allsnps$outlier == TRUE & allsnps$outlierwindow == TRUE & allsnps$annotation == "stop_gained"),] %>% dplyr::select(c('frequency','area','impact','annotation','INV','position','chromosome','bin'))))
-missenseoutliersplot$plot_annotation <- 'Nonsynonymous variant'
-missenseoutliersplot$bin <- 0
-ag_jdist <- ggplot() + theme_classic() +
-  geom_point(data=allsnpsplot[allsnpsplot$plot_annotation=='none',], mapping=aes(x=frequency, y=area), alpha=0.01, size=0.5) + 
-  geom_point(data=allsnpsplot[allsnpsplot$plot_annotation!='none',], mapping=aes(x=frequency, y=area, color=plot_annotation), alpha=0.025, size=0.5) + 
-  geom_line(data=allsnpsplot, aes(x=frequency, y=cutoff, group=INV, linetype=INV), linewidth=0.5) + 
-  geom_point(data=outlier_notIG %>% dplyr::arrange(impact),
-             aes(x=frequency, y=area, color=plot_annotation, size=impact)) +
-  scale_color_manual(labels=c('Noncoding variant','Synonymous variant','Nonsynonymous variant'),
-                     values=c('#375B69','#2CD38B', '#ADEB9E')) +
-  geom_point(data=missenseoutliersplot, aes(x=frequency, y=area, size=impact, linetype=INV), shape=21, fill='#ADEB9E') +
-  scale_size_manual(values=c(0.5, 1, 2, 3)) +
-  scale_linetype_manual(values=c('dashed','dotdash','dotted','solid')) +
-  scale_y_continuous(limits=c(0, NA))
-
+```{r}
+DT::datatable(missense_ir %>% arrange(-`ddG (kcal/mol)`), class='cell-border stripe', rownames=F, filter='top',
+              editable=TRUE, extensions='Buttons', options=list(
+                dom='Bfrtip', buttons=c('copy','csv','pdf')
+              ))
 ```
 
 
+# Vignettes
+
+## AGAP029542
+
+Do any of these variants change splice sites?
+
+```{r make-snpAI-annotation}
+gff <- fread('data/VectorBase-68_AgambiaePEST.gff')
+colnames(gff) <- c('CHROM','SOURCE','TYPE','START','STOP','X','STRAND','Y','INFO')
+
+gff <- gff[gff$CHROM == 'AgamP4_3R',]
+proteins <- gff[gff$TYPE == 'protein_coding_gene',]
+mrnas <- gff[gff$TYPE == 'mRNA',]
+mrnas <- mrnas %>% tidyr::separate(INFO, sep=';', into=c('ID','Parent','INFO'), extra='merge')
+mrnas$ID <- str_remove(mrnas$ID, 'ID=')
+mrnas$Parent <- str_remove(mrnas$Parent, 'Parent=')
+exons <- gff[gff$TYPE == 'exon',]
+exons <- exons %>% tidyr::separate(INFO, sep=';', into=c('ID', 'Parent', 'INFO'), extra='merge')
+exons$ID <- str_remove(exons$ID, 'ID=')
+exons$Parent <- str_remove(exons$Parent, 'Parent=')
 
 
-```{r save-jdist}
-ag_jdist + 
-  inset_element(ag_map +
-                theme(legend.box.spacing=margin(0),
-                      legend.background = element_blank(), 
-                      plot.background = element_blank()), 
-                0.4, 0, 1, 0.5)
-ggsave('agjointdistribution.pdf', width=8, height=5, units='in')
+ann3R <- merge(mrnas, exons,
+      by.x='ID', by.y='Parent',
+      suffixes=c('.mrna','.exon'))
+exons3R <- ann3R %>% dplyr::group_by(ID) %>% dplyr::summarize(
+                                                    EXON_START = na_if(coalesce(str_c(START.exon, collapse = ","),
+                                                                str_c(START.exon[complete.cases(START.exon)], collapse = ",")), ""),
+                                                    EXON_END = na_if(coalesce(str_c(STOP.exon, collapse = ","),
+                                                                str_c(STOP.exon[complete.cases(STOP.exon)], collapse = ",")), ""))
+exons3R$EXON_START <- paste0(exons3R$EXON_START, ',')
+exons3R$EXON_END <- paste0(exons3R$EXON_END, ',')
+
+anndf <- merge(mrnas, exons3R)
+anndf$NAME <- anndf$ID
+anndf$TX_START <- anndf$START
+anndf$TX_END <- anndf$STOP
+
+fwrite(anndf[,c('NAME','CHROM','STRAND','TX_START','TX_END','EXON_START','EXON_END')], 'data/3RspliceAI.txt', sep='\t')
 ```
 
-## Anopheles genomic windows
+## Gustatory receptors
 
-```{r format-allsnphist}
-allsnphist <- fread('out/all_snp_histogram.txt')
-allsnphist$INV_group <- allsnphist$INV
+Which transcripts are changed?
 
-Rbstart <- 18575300
-Rbstop <- 26767588
-allsnphist[(allsnphist$chromosome=='2R' &
-           allsnphist$mids <= Rbstart),]$INV_group <- '2Rb1'
-allsnphist[(allsnphist$chromosome=='2R' &
-              allsnphist$breaks <= Rbstart),]$INV_group <- '2Rb1'
-Rcstart <- 26750000
-Rcstop <- 31473000
-allsnphist[(allsnphist$chromosome=='2R' &
-              allsnphist$mids >= Rcstop),]$INV_group <- '2Rc2'
-allsnphist[(allsnphist$chromosome=='2R' &
-              allsnphist$breaks >= Rcstop),]$INV_group <- '2Rc2'
-Lastart <- 20524058
-Lastop <- 42165532
-allsnphist[(allsnphist$chromosome=='2L' &
-              allsnphist$mids <= Lastart),]$INV_group <- '2La1'
-allsnphist[(allsnphist$chromosome=='2L' &
-              allsnphist$breaks <= Lastart),]$INV_group <- '2La1'
-allsnphist[(allsnphist$chromosome=='2L' &
-              allsnphist$mids >= Lastop),]$INV_group <- '2La2'
-allsnphist[(allsnphist$chromosome=='2L' &
-              allsnphist$breaks >= Lastop),]$INV_group <- '2La2'
+```{r}
+snp_alleles <- fread('out/outlier_snps_ancestral_derived.txt')
+grps <- snp_alleles[grepl('gustatory', snp_alleles$`Product Description`, fixed=TRUE) & 
+                     snp_alleles$AA_change != '',]
+grps$source_id <- grps$source_id_x
+grps <- grps %>% dplyr::select(-c(V1, source_id_x, source_id_y))
 
-allsnphist<- rbind(allsnphist[allsnphist$chromosome != '2L',], 
-                   allsnphist[allsnphist$chromosome=='2L' & allsnphist$INV_group != '',])
-allsnphist<- rbind(allsnphist[allsnphist$chromosome != '2R',], 
-                   allsnphist[allsnphist$chromosome=='2R' & allsnphist$INV_group != '',])
-allsnphist <- allsnphist[!is.na(allsnphist$chromosome),]
-allsnphist[allsnphist$inv=='','INV'] <- 'none'
-allsnphist <- allsnphist[allsnphist$chromosome != 'X',]
+grps <- merge(grps, missense_df, by='source_id')
+DT::datatable(grps, class='cell-border stripe', rownames=F, filter='top',
+              editable=TRUE, extensions='Buttons', options=list(
+                dom='Bfrtip', buttons=c('copy','csv','pdf')
+              ))
 ```
 
+Get the changed transcripts for AlphaFold...
 
-```{r windowed-histogram}
+```{r}
+# define transcripts (sourced from Vectorbase)
+AGAP006143_RC <- 'MHELQFLNIFNYCFVSPTYLHFDSLCNRYEFQHKNVFRNVTLLIVLVTCSVVSAIAVIVEFMQTSLLSVIGASSIILYTTRFLVMIPLTLWVWLCRHQLISDNNVALNIIQHKHAKFYPMPARRRTLQIYWIQVGSIVILLTAALAGQCITWWEIVVTRKEYFLLNVCALVALEILTLMHRMYIQCWALVIAHHLDELVGFVKNKRVELHLLRAAIVFWEELEFFKQRATSTFRVMNVLHVLDILITCVVETYTIFYVFEMGLSLVDAMLNVITLTVYAATFFMFAYAHDLVKVKEAELKDALKSMQYTNLKRQSRDQKDFYDLVNLKLMMESPKITACGLFEINLQIFYNVFAAIITYIVILFQFRGFEKSP'
+AGAP006877_RA <- 'MDPIKLDTTFYHKLLVKKFNLLLNIAQLAGFLPFPAYVLRQDVERLHFRTLVLTCLNLTFAVLIFLTSFVCYLAMYIYYPDLMYKENLPAVLQIMYHVENWLRVVMVLIALVGPRLSGRYFRETIDTLVHIMKLFDRATKIESILTAISVITNRLLLLYGLHALIITVTVWISTEHPVSTLLNVSYLAPYVTIAVYILLYRALLASIAGIVGCLNDNLREITIQDRIDPRRTYGKHTTISYIMLQEGKERVTSPLDVATIVRLSTMHMALMRLARAANKHFGVLMLIIVLSTFIQINMLLLELYHNISHPVMPEYCLWVLFLHAIVHFTFFFVIATSNHAIQQENERTMLLLHEFKCSWSSEQNMTIEHFISQISNLHDVHQACGMLNLDMKLISNAVAAITSIMVVLIQFSDTGL'
+AGAP006877_RB <- 'MAWNDTEIDRLRHQLRQNISPTVRLSQCLSLAPYPLSVFQRNCSTRSVRIRIIICFRYAFATCVTVAVVASQFTMFYYFPHIMYQPKVPIFIVILYYIVSILQTLTTGNMMIGCEQRRAEYEGYFEEVLHLMKETAHQPDCKTTIWYRHVTKVLLALYCIASLTVPIVMTTILWDIATIPYVMAQTVPFVVSSLILNQYFCVFVHLTSILRKMNERLARFLNMLPGSATEPPVQLRGKPLIYNVLGESLKMESSRLDQLEQLRLLHVRTVQTAGSLSEKFGIVIILIVIAAFASVNIELLEFYQSIKLGTLTPTTIFMKFLYAASKFSFYILIAYPNRLIQQENQKALFMLYRIKRISCSVELNEAIEHFISQISNLHDVHQACGMLNLDMKLISNAVAAITSIMVVLIQFSDTGL'
+AGAP009805_RI <- 'MSNLLKRYRLLLAVASIGYLIPCSYNIRTGLFDCSYRNTLVCVCNVVFFGGFVWYDFGMILKFYATLPIVLVGILTVDVTVYNLLIFCIIINAVYNRDCFVQLLNSLFARDDWMLESVAMQGSSQQRRSTQSTGGLVCLIVLVLLYAMYNALFVNDHSMVLMDMIILLRFCFMFLILELYRVCVRIIRKRMKQLQVLLTQMEEINTTACVEHVVHVFLDRFQRYYLLIDSVNKCFSVPVTHTLLLIVLERTVAAYDVFENLRGESKMILWDFYRLLYRQVWEITYIVLMVLLAINCNATSLQVEETALCTRHFDDYRLQNTRAAKQIQNFLLKNLHQKKKFSACGFFDIDNTVIYMVFSSIVTYLVILIQFKQLETDLTQAGDGYNVTSNVSTVQP'
+AGAP009857_RA <- 'MQFSHQHSSDVHFIVSRERSSPSTCTMNLVLPLLPNGQQLLSVAFGIFKCFGFIPFPFDCCTFALTPCSNVRSLLHLPILQVSFYLTLFCIIMSNRVNFFFTGLQILSLNDIIKYGTLTLSVFAIFIDTVLQRNTHRLVWEKIALIRLSARKVYVERFTRHYLWKFYGYLAVCAFLEAQVLYLAWDDPSALAYWLVIMILHAFLRLRHLFHMFFIDILKIHLQKLHHDLVDAGEYMADLVEQPQDTAVFRAMYAQSVDRLLSLKSVYGQLWELSDCINRNFGWSQICNFTGNFVQLSCDLYWLYMSMKWFEATEYKVVIVITLLPSTSIIVLLLSSAESCLGVAASLQSALLDIPMGNDSTFRKIIYRFGLQIAQQRIRLTAHGLFEINYSLLKMFGTGITTYMIIFITFSKDIKLEDIDDE'
+AGAP011915_RA <- 'MSKWINKRKVSILNLAPPSKPGPALQATPVGEQEFEQLFHFAFKCFRLFALTPGLMDRQKDRYRVRNTRWMMLIVLLLVVVAWIALFETFFIERRTALITGIANHIQFLMNTIALTVAWVVPQLKADELGSILDGFLLIDRELSSYNVHEVAGYKRVSFLLRYGVVLLALMSLTVYDGFVSFVQLTTVEVWYWLSHQLPFIIYAMAFLHAYVLIYWLHARFRRLNTLVEQYYRQGHIFAPARQTIISFATMVKLDEESAVGEELHSVGRREISDDLQVLAIVSRTIDLGQKIESYFGPLFLTVYTALFSVTTIQSYYCYLHLTAKGDRGLSIETLVLSGGIILYNVIAIVALPYICEQVESESKLLMSYLSKLSMKHSQVAQHSSIWFPNLISSVRFSAFGFFTINYNMLSGLVAGMVTYLIIFIQFNSMVPAGKDDTHHTRKQHVTEERF'
 
-missenseoutliersplot$y <- 0
-
-for (i in seq(nrow(missenseoutliersplot))){
-  chr <- missenseoutliersplot[i,'chromosome']
-  pos <- missenseoutliersplot[i,'position']
-  offset <- max(allsnphist[allsnphist$chromosome=='2L','ratio'])/5
-  missenseoutliersplot[i,'y'] <- (allsnphist[(allsnphist$breaks <= pos & (allsnphist$breaks + 100000) >= pos & allsnphist$chromosome==chr),]$ratio) + offset
-}
-
-window_plot <- ggplot() + theme_minimal() +
-    geom_line(data = allsnphist, aes(x=mids, y=Q, group=INV_group, color=INV), 
-            alpha=0.9, linewidth=0.3) + 
-  scale_color_manual(values=c('#384A4C','#375B69', '#2E6D74', '#32413A')) +
-    new_scale_color() +
-  geom_line(data = allsnphist, aes(x=mids, y=ratio, group=INV_group, color=INV), linewidth=0.3) + 
-  scale_color_manual(values=c('#2E6D74','#2CD38B', '#ADEB9E', '#27301D')) +
-
-
-  #scale_linetype_manual(values=c('dashed','dotdash','dotted','solid')) +
-  new_scale_color() +
-  geom_point(data = missenseoutliersplot, aes(x=position, 
-                                              y=y,
-                                              size=frequency,
-                                              fill=area), 
-             pch=25,) +
-  scale_size_continuous(range=c(0.3, 2), guide='legend', ) +
-  scale_fill_viridis(option='C') +
-  facet_wrap(vars(chromosome), scales = "free")
-
-window_plot
-
-ggsave('aggenomicwindows_annotated1.pdf', width=8, height=4, units='in')
-
-missenseoutliersplot
-```
-
-## Tables
-
-```{r table-func}
-library(xtable)
-
-texTable <- function(table){
-  print(xtable(table),floating=FALSE,latex.environments=NULL,booktabs=TRUE)
-}
-```
-
-```{r missense-outliers-table}
-mstex <- missenseoutliers[missenseoutliers$`ddG (kcal/mol)` != 0,] %>% 
-         dplyr::select(c('Gene ID','frequency','area','ddG (kcal/mol)','Product Description',"AA_change")) %>% 
-         arrange(-`ddG (kcal/mol)`) %>% distinct()
-mstex <- data.frame(mstex)
-colnames(mstex) <- c('Gene', 'SNP frequency', 'SNP area (km2)', 'ddG (kcal/mol)', 'Product Description', 'Amino acid change')
-#rownames(mstex) <- make.unique(mstex$Gene)
-#mstex[,1] <- NULL
-texTable(mstex)
-
-fwrite(mstex, 'out/missense_outliers_manual_annotation_blank.txt', sep='\t')
-```
-
-```{r ddg-plot}
-library(ggrepel)
-library(ggnewscale)
-
-mstex <- fread('out/missense_outliers_manual_annotation.tsv')
-mstex$`SNP frequency` <- as.numeric(mstex$`SNP frequency`)
-mstex$`ddG (kcal/mol)` <- as.numeric(mstex$`ddG (kcal/mol)`)
-mstex$`SNP area (km2)` <- as.numeric(mstex$`SNP area (km2)`)
-mstex$Function <- factor(mstex$Function, levels=c('insecticide target','immune response','transcriptional regulation','DNA repair','sensory','cellular division','unannotated'))
-mstex[mstex$Function == 'insecticide target',]$Function <- 'insecticide resistance'
-
-
-mstex$xvar <- seq(nrow(mstex))
-mstex$yvar <- mstex$`ddG (kcal/mol)`
-mstex$yvar[mstex$yvar > 0] <- log10(mstex$yvar[mstex$yvar > 0])
-mstex$yvar[mstex$yvar < 0] <- -1 * log10(abs(mstex$yvar[mstex$yvar < 0]))
-
-ggplot() + theme_minimal() +
-  geom_hline(aes(yintercept=0), alpha=0.5) +
-  geom_text_repel(seed = 420,
-            data=mstex,
-            aes(x=`SNP frequency`, y=`ddG (kcal/mol)`, label=stringr::str_wrap(`Annotation`, 22)),
-            #xlim = c(-Inf, Inf), ylim = c(-Inf, Inf),
-            direction = "both",
-            lineheight = .75,
-            min.segment.length = 0,
-            size=2,
-            hjust='left',
-            segment.size=0.25,
-            segment.alpha=0.9,
-            force_pull=10,
-            force=0.5,
-            nudge_x=0.1,
-            nudge_y=0.025) +
-  scale_size_continuous(trans='log10') +
-    new_scale('size') +
-  geom_point(data=mstex %>% arrange(-`ddG (kcal/mol)`),
-             aes(x=`SNP frequency`, y=`ddG (kcal/mol)`, size=`SNP area (km2)`, color=`Function`)) +
-  scale_color_manual(values=c('#F2F658','#54EC87', '#24AA87', '#0F1682', '#375B69','#808080','#A9A9A9','#DCDCDC')) +
-
-  #24AA87
-  #bcf0af
+for (i in seq(nrow(grps))){
+  print(as.character(grps[i, 'source_id']))
+  pseq <- grps[i, 'source_id'] %>% str_replace('-','_') %>% get()
+  ancAA <- as.character(grps[i, 'wtAA'])
+  derAA <- as.character(grps[i, 'mutAA'])
+  posAA <- as.integer(grps[i, 'pos'])
   
-  #scale_color_continuous(trans='log10') +
-  scale_y_continuous(trans=scales::pseudo_log_trans(base=10, sigma=0.1)) +
-  scale_x_continuous(trans='log10', breaks=c(0.1, 0.25, 0.5, 1))
+  if (substr(pseq, posAA, posAA) == ancAA){
+    substr(pseq, posAA, posAA) <- derAA
+    print(pseq)
+  }
+  else {print('oops')}
+}
 
-ggsave('agmissenseoutliers_wide.pdf', width=8, height=3, units='in')
 
-ggsave('agmissenseoutliers.pdf', width=8, height=4, units='in')
+
+
 ```
+
