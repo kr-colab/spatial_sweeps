@@ -179,6 +179,37 @@ fwrite(outliersnps, 'out/outlier_snps_annotated.txt', sep='\t')
 ggplot(allsnps) + geom_point(aes(x=frequency, y=area, color=outlier), alpha=0.1) + geom_line(aes(x=frequency, y=cutoff))
 ```
 
+Let's also give each SNP a bin-based Z score based on where it is w/in the bulk of the distribution:
+
+```{r snprob}
+robustscale <- function(data, center=TRUE, scale=TRUE,
+                        preserveScale = FALSE){
+  medians = NULL
+  if(center){
+    medians <- median(data,na.rm=TRUE)
+    data = data-medians
+  }
+  mads=NULL
+  if(scale){
+    mads <- mad(data, na.rm=TRUE)
+    if (mads==0){mads <- 1e-6}
+    if(preserveScale){
+      mads <- mads/mean(mads)
+    }
+    data = data/mads
+  }
+  return(data)
+}
+
+allsnps <- allsnps %>% dplyr::group_by(bin) %>% dplyr::mutate(zrob = robustscale(area))
+```
+
+
+```{r zcSNPwise}
+allsnps <- allsnps %>% dplyr::group_by(bin) %>% dplyr::mutate(binmean = mean(area), binsd = sd(area))
+allsnps <- allsnps %>% dplyr::mutate(snpZscore = (area - binmean)/binsd)
+```
+
 Are certain types of SNPs more likely to be found amongst outliers?
 Let's check using a hypergeometric test:
 
@@ -255,8 +286,13 @@ for (inv in c('2Rb','2Rc','2La')){
   # save dataframe
   invoutliersnps <- invdf[invdf$outlier == TRUE,]
   fwrite(invoutliersnps, paste0('out/inversion/',inv,'_outlier_snps_annotated.txt'), sep='\t')
-  assign(paste0("invdf",inv), invdf)
 
+  invdf <- invdf %>% dplyr::group_by(bin) %>% dplyr::mutate(zrob = robustscale(area))
+  
+  invdf <- invdf %>% dplyr::group_by(bin) %>% dplyr::mutate(binmean = mean(area), binsd = sd(area))
+  invdf <- invdf %>% dplyr::mutate(snpZscore = (area - binmean)/binsd)
+  assign(paste0("invdf",inv), invdf)
+  
   # hypergeometric tests
   for (ann in unique(invdf$annotation)){
     q <- nrow(invdf[invdf$outlier == TRUE & invdf$annotation == ann,])
@@ -433,13 +469,7 @@ ggplot(recsnphist) + theme_bw() +
   facet_wrap(vars(chromosome))
 ```
 
-```{r read-final-}
-allsnps <- fread('out/all_snps_genome_scan_annotated.txt')
-allsnphist <- fread('out/all_snps_windowed_genome_scan_annotated.txt')
-recsnphist <- fread('out/high_recombination_windowed_genome_scan_annotated.txt')
-```
-
-```{r tag-outliers, echo=FALSE, eval=FALSE}
+```{r tag-outliers, echo=FALSE}
 recsnphist <- recsnphist[!is.na(recsnphist$statistic),]
 recsnphist$nstat_outlier <- FALSE
 recsnphist[recsnphist$statistic > recsnphist$Q,]$nstat_outlier <- TRUE
@@ -473,8 +503,14 @@ for (inversion in c('none','2La','2Rc','2Rb')){
 }
 ```
 
+```{r significance}
+# adding p values for our Z scores!
+allsnps$snpPval <- pnorm(q=allsnps$snpZscore, lower.tail=TRUE)
+allsnps$windowPval <- pnorm(q=allsnps$nstat, lower.tail=FALSE)
+```
 
-```{r save-final, eval=FALSE}
+
+```{r save-final}
 fwrite(allsnps, 'out/all_snps_genome_scan_annotated.txt')
 fwrite(allsnphist, 'out/all_snps_windowed_genome_scan_annotated.txt')
 fwrite(recsnphist, 'out/high_recombination_windowed_genome_scan_annotated.txt')
@@ -808,7 +844,7 @@ thermo <- rbindlist(lapply(list.files('out/thermompnn-out', full.names=TRUE), rf
 
 missense_df <- left_join(missense_df, thermo, by=c('UniProt ID(s)' = 'UniProt ID(s)', 'AA_change' = 'AA_change'))
 missense_df <- missense_df[!is.na(missense_df$`ddG (kcal/mol)`) & missense_df$`ddG (kcal/mol)` != 0,]
-DT::datatable(missense_df[,c('Gene ID', 'Product Description', 'frequency', 'area', 'ddG (kcal/mol)', 'AA_change', 'nstat_outlier', 'nstat')] %>% arrange(-`ddG (kcal/mol)`), class='cell-border stripe', rownames=F, filter='top',
+DT::datatable(missense_df[,c('Gene ID', 'Product Description', 'frequency', 'area', 'ddG (kcal/mol)', 'AA_change', 'nstat_outlier', 'nstat', 'snpZscore', 'zrob', 'snpPval')] %>% arrange(-`ddG (kcal/mol)`), class='cell-border stripe', rownames=F, filter='top',
               editable=TRUE, extensions='Buttons', options=list(
                 dom='Bfrtip', buttons=c('copy','csv','pdf')
               ))
@@ -964,4 +1000,5 @@ for (i in seq(nrow(grps))){
 
 
 ```
+
 

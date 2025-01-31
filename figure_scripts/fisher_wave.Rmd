@@ -1,0 +1,352 @@
+---
+title: "Fisher wave"
+author: "Clara Rehmann"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(data.table)
+library(scales)
+```
+
+## Fisher wave
+
+If we let an allele spread across a landscape at a given velocity (a la Fisher's wave of advance of advantageous genes), what does the relationship between frequency and area look like?
+
+```{r wave}
+allele_area <- function(r, # radius of circle
+                        landscape_width = 25
+                        ) {
+  a=landscape_width/2 # maximum radius before allele exits circle
+  if (r <= a) { # circle is completely within the landscape
+    area=pi*(r**2)
+  }
+  else if (r >= (sqrt(2*(a**2)))) { # circle is completely outside the landscape
+    area=(a*2)**2
+  }
+  else { # circle exits the landscape - do some fancy trig
+         # https://math.stackexchange.com/questions/1450961/overlapping-area-between-a-circle-and-a-square
+    theta=acos(a/r)
+    area=(((pi-(4*theta))*(r**2))+(4*a*r*sin(theta)))
+  }
+  return(area)
+}
+
+allele_frequency <- function(a, #area of allele
+                             f = 1, #frequency of allele inside area
+                             landscape_width = 25
+                            ){
+  A=landscape_width**2 # size of landscape
+  return(f*(a/A))
+}
+
+Fisher_wave <- function(M, # migration rate
+                        S, # selection coefficient
+                        landscape_width = 25) {
+  landscape_area=landscape_width**2
+  rmax=landscape_width/2 # radius @ which circle starts escaping the landscape
+  Rmax=sqrt(2*(rmax**2)) # radius @ which circle encompasses landscape
+  V=2*sqrt(S*M) # allele velocity
+  radii=seq(0, Rmax, V) # radius of the allele area circle after each generation
+  
+  areas <- sapply(radii, allele_area)
+  frequencies <- sapply(areas, allele_frequency)
+  return(data.table(areas, frequencies))
+}
+```
+
+We're making two assumptions at first:
+First, we'll assume an infinite population across the landscape so that we can approximate allele frequency as the proportion of landscape area occupied by the allele...
+Second, we're approximating the wave *without* heterozygotes - so everywhere the radius of the circle is, the allele is fixed, and everywhere it isn't, it's absent.
+
+```{r wave-test}
+M=0.01
+S=0.1 # selection coefficient
+ggplot(Fisher_wave(M, S)) + geom_line(aes(x=frequencies, y=areas))
+```
+
+Shit, that is just linear. What's going on here?
+
+(A) The curve of the frequency/area joint distribution from our sims depends on the fact that population density increases where the allele is more frequent
+
+(B) The heterozygotes matter
+
+Option B is the more straightforward one to check out, so let's modify the code to include a second circle bound for the heterozygotes at the front of the wave.
+Within this bound (but outside of the bound of fixation), we'll approximate the frequency to be 0.5.
+
+```{r}
+M = 0.1
+S = 0.05
+Fisher_wave_H <- function(M, # migration rate
+                          S, # selection coefficient
+                          landscape_width = 25) {
+  landscape_area=landscape_width**2
+  rmax=landscape_width/2 # radius @ which circle starts escaping the landscape
+  Rmax=sqrt(2*(rmax**2)) # radius @ which circle encompasses landscape
+  
+  lambd=sqrt(M/S)
+  V=M*sqrt(S) # allele velocity
+  #W =1/sqrt(S*M)
+  #W=4*lambd
+  #W = sqrt((2*M)/S)
+  W=1/(4*sqrt(S)) # width of wavefront?????????????????????????????????????????????????
+  hom_radii=seq(0, Rmax, V) # radius of the homozygous allele area circle after each generation
+  het_radii=seq(0, Rmax+W, V) # radius of the heterozygous allele area circle after each generation
+  hom_radii <- c(rep(0, length(het_radii) - length(hom_radii)), hom_radii) # add het only generations
+  
+  
+  hom_areas <- sapply(hom_radii, allele_area)
+  het_areas <- sapply(het_radii, allele_area)
+  allele_areas <- het_areas
+  het_areas <- het_areas - hom_areas
+  frequencies <- sapply(hom_areas, allele_frequency) + 
+    (sapply(het_areas, allele_frequency, 0.5))
+  #frequencies <- rescale(frequencies)
+  return(data.table(allele_areas, frequencies))
+}
+
+ggplot(Fisher_wave_H(M, S)) + geom_line(aes(x=frequencies, y=allele_areas))
+```
+
+YEAAAAAAAAAAAAA
+
+does it change with selection?
+
+```{r}
+for (s in c(0.0001, 0.001, 0.01, 0.1)){
+  df <- Fisher_wave_H(0.1, s)
+  df$s <- s
+  df$tick <- seq(nrow(df))
+  assign(paste0('S_',s), df)
+}
+
+df <- rbind(`S_1e-04`, S_0.001, S_0.01, S_0.1)
+ggplot(df) + theme_bw() + geom_line(aes(x=frequencies, y=allele_areas, group=s, color=s)) + scale_color_continuous(trans='log10')
+```
+
+```{r}
+for (s in c(0.0001, 0.001, 0.01, 0.1)){
+  df <- Fisher_wave_H(1, s)
+  df$s <- s
+  assign(paste0('S_',s), df)
+}
+
+df <- rbind(`S_1e-04`, S_0.001, S_0.01, S_0.1)
+ggplot(df) + theme_bw() + geom_line(aes(x=frequencies, y=allele_areas, group=s, color=s)) + scale_color_continuous(trans='log10')
+```
+
+
+```{r}
+for (s in c(0.0001, 0.001, 0.01, 0.1)){
+  df <- Fisher_wave_H(0.1, s)
+  df$s <- s
+  assign(paste0('S_',s), df)
+}
+
+df <- rbind(`S_1e-04`, S_0.001, S_0.01, S_0.1)
+ggplot(df) + theme_bw() + geom_line(aes(x=frequencies, y=allele_areas, group=s, color=s)) + scale_color_continuous(trans='log10')
+```
+
+
+```{r}
+plot(df[df$s==0.0001]$frequencies)
+
+```
+
+So it's close, but the 0.5 approximation is still messing stuff up. Let's try approximating the frequency in that area as the volume of a cone...
+
+
+```{r fancy-het}
+allele_hom_frequency <- function(a, #area of allele
+                                 f = 1, #frequency of allele inside area
+                                 landscape_width = 25
+                                 ){
+  A=landscape_width**2 # size of landscape
+  return(f*(a/A))
+}
+
+allele_het_frequency <- function(hetR, # radius of heterozygotes
+                                 homR, # radius of homozygotes
+                                 W, # width of wave
+                                 landscape_width=25){
+    if (hetR == 0){ return(0) }
+    rmax = hetR # maximum value of het wave
+    a=landscape_width/2 # maximum radius before allele exits circle
+    # function for hypotenuse
+    slope=-1/(rmax-homR) # slope of hypotenuse
+    intercept=rmax/(rmax+homR) # intercept of hypotenuse
+    f <- function(x){
+      return(slope*x+intercept)
+    }
+    
+    Istart <- homR # start of interval
+    Istop <- rmax # end of interval
+    allelevolume <- pi * integrate(function(x) (f(x))^2, Istart, Istop)$value
+
+    if (rmax > a){ # circle exceeds landscape
+      extravol <- pi * integrate(function(x) (f(x))^2, a, Istop)$value
+      allelevolume <- allelevolume - extravol
+    }
+    
+    # full volume of cylinder ring
+    c <- function(x){
+      return(2 * pi * x)
+    }
+    cyvolume <- integrate(c, homR, rmax)$value
+    if (rmax > a){ # circle exceeds landscape
+      extravol <- integrate(c, a, Istop)$value
+      cyvolume <- cyvolume - extravol
+    }
+    area = allelevolume/cyvolume 
+    return(area)
+}
+
+allele_cone <- function(het_radius, # radius of heterozygotes
+                        hom_radius, # radius of homozygotes
+                        hom_area, # area of homozygotes
+                landscape_width = 25){
+  if (het_radius == 0){ return(0) }
+  rmax = landscape_width/2 # radius the cone starts exiting the circle
+  Rmax=sqrt(2*(rmax**2)) # radius @ which circle encompasses landscape
+  slope=-1/(het_radius-hom_radius) # slope of hypotenuse
+  intercept=-slope * het_radius # intercept of hypotenuse
+  fx <- function(x){
+    return(x*slope + intercept)
+  }
+  fy <- function(y){
+    return((y - intercept)/slope)
+  }
+  if (het_radius <= rmax){
+  # volume of het cone
+  allelevolume <- pi * het_radius^2 * (intercept / 3)
+  # cut off top of cone
+  alleletop <- pi * hom_radius^2 * ((intercept-1)/3)
+  allelevolume <- allelevolume-alleletop
+  }
+  if ((het_radius > rmax) & (het_radius <= Rmax)) {
+    allelevolume <- pi * het_radius^2 * (intercept / 3)
+    # cut off top of cone
+    alleletop <- pi * hom_radius^2 * ((intercept-1)/3)
+    allelevolume <- allelevolume-alleletop
+    h = intercept # height of whole cone
+    r = het_radius # radius of whole cone
+    d = rmax # distance from origin to slice
+    # cone slices https://math.stackexchange.com/questions/1660071/how-to-calculate-volume-of-a-right-circular-cones-hyperbola-segment
+    slicevol <- (h/3) * 
+                ((-2 * d * sqrt(r^2 - d^2)) +
+                      ((d^3 / r) * log(sqrt(r^2 - d^2) + r)) +
+                      ((r^2 * acos(d/r)) - ((d^3 / r) * log(d))))
+    h1 <- intercept - 1
+    r1 <- fy(1)
+    if (h1 > 0){
+    #cone volume above y=1 was already subtracted, so remove that from the slice
+      outside <- h1/3 * 
+                 ((-2 * d * sqrt(r1^2 - d^2)) +
+                      ((d^3 / r1) * log(sqrt(r1^2 - d^2) + r1)) +
+                      (r1^2 * acos(d/r1) - ((d^3 / r1) * log(d))))
+      if (is.na(outside)){slicevol = slicevol}
+      else {slicevol <- slicevol - outside}
+    }
+    allelevolume <- allelevolume - 4*slicevol
+  }
+    if (het_radius > Rmax){
+      # full volume of 25x25 box beneath cone
+      circleintersectY <- fx(Rmax)
+      boxvol <- 25 * 25 * circleintersectY
+      # cone on top
+      coneheight <- intercept - circleintersectY
+      conevol <- pi * Rmax^2 * (coneheight/3)
+      conetop <- pi * hom_radius^2 * ((intercept-1)/3)
+      conevol <- conevol - conetop
+      # slices from the outside
+      d <- rmax
+      r <- Rmax
+      h <- coneheight
+      slicevol <- (h/3) * 
+                ((-2 * d * sqrt(r^2 - d^2)) +
+                      ((d^3 / r) * log(sqrt(r^2 - d^2) + r)) +
+                      ((r^2 * acos(d/r)) - ((d^3 / r) * log(d))))
+      h1 <- intercept - 1
+      r1 <- fy(1)
+      if (h1 > 0){
+      # cone volume above y=1 was already subtracted, so remove that from the slice
+      outside <- h1/3 * 
+                  ((-2 * d * sqrt(r1^2 - d^2)) +
+                      ((d^3 / r1) * log(sqrt(r1^2 - d^2) + r1)) +
+                      (r1^2 * acos(d/r1) - ((d^3 / r1) * log(d))))
+        if (is.na(outside)){slicevol = slicevol}
+        else {slicevol <- slicevol - outside}
+      }
+      allelevolume <- (conevol - 4*slicevol) + boxvol
+    }
+  return((allelevolume) / (25*25))
+}
+
+
+M = 0.1
+S = 0.01
+landscape_width=25
+Fisher_wave_H <- function(M, # migration rate
+                          S, # selection coefficient
+                          landscape_width = 25) {
+  landscape_area=landscape_width**2
+  rmax=landscape_width/2 # radius @ which circle starts escaping the landscape
+  Rmax=sqrt(2*(rmax**2)) # radius @ which circle encompasses landscape
+  
+  lambd=sqrt(M/S)
+  V=M*sqrt(S) # allele velocity
+  W=1/(4*sqrt(S)) # width of wavefront?????????????????????????????????????????????????
+  hom_radii=seq(0, Rmax, V) # radius of the homozygous allele area circle after each generation
+  het_radii=seq(0, Rmax+W, V) # radius of the heterozygous allele area circle after each generation
+  hom_radii <- c(rep(0, length(het_radii) - length(hom_radii)), hom_radii) # add het only generations
+  het_areas <- sapply(het_radii, allele_area)
+  allele_areas <- het_areas
+  het_freq <- mapply(allele_cone, het_radius=het_radii, hom_radius=hom_radii, hom_area=hom_areas)
+  frequencies <- het_freq
+  return(data.table(allele_areas, frequencies))
+}
+
+df <- Fisher_wave_H(M, S)
+df$index <- seq(nrow(df))
+ggplot(df) + geom_point(aes(x=index, y=frequencies))
+```
+
+```{r}
+for (s in c(0.0001, 0.001, 0.01, 0.1)){
+  df <- Fisher_wave_H(0.1, s)
+  df$s <- s
+  df$tick <- seq(nrow(df))
+  assign(paste0('S_',s), df)
+}
+
+df <- rbind(`S_1e-04`, S_0.001, S_0.01, S_0.1)
+ggplot(df) + theme_bw() + geom_line(aes(x=frequencies, y=allele_areas, group=s, color=s)) + scale_color_continuous(trans='log10')
+```
+
+```{r}
+for (s in c(0.0001, 0.001, 0.01, 0.1)){
+  df <- Fisher_wave_H(0.0001, s)
+  df$s <- s
+  df$tick <- seq(nrow(df))
+  assign(paste0('S_',s), df)
+}
+
+df <- rbind(`S_1e-04`, S_0.001, S_0.01, S_0.1)
+ggplot(df) + theme_bw() + geom_line(aes(x=frequencies, y=allele_areas, group=s, color=s)) + scale_color_continuous(trans='log10')
+```
+
+
+
+```{r}
+for (s in c(0.0001, 0.001, 0.01, 0.1)){
+  df <- Fisher_wave_H(0.1, s)
+  df$s <- s
+  df$tick <- seq(nrow(df))
+  assign(paste0('S_',s), df)
+}
+
+df <- rbind(`S_1e-04`, S_0.001, S_0.01, S_0.1)
+ggplot(df) + theme_bw() + geom_line(aes(x=frequencies, y=allele_areas, group=s, color=s)) + scale_color_continuous(trans='log10')
+```
