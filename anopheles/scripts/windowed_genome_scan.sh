@@ -1,13 +1,4 @@
 #!/bin/bash
-#SBATCH --account=kernlab
-#SBATCH --partition=kern,kerngpu
-#SBATCH --job-name=snpscan
-#SBATCH --output=logs/scan-%j\.out
-#SBATCH --error=logs/scan-%j\.err
-#SBATCH --nodes=1
-#SBATCH --mem=50G
-#SBATCH --time=5:00:00
-
 chr=$1
 startwindow=$2
 stopwindow=$3
