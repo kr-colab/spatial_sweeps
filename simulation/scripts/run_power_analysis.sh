@@ -1,13 +1,4 @@
 #!/bin/bash
-#SBATCH --partition=kern,kerngpu,preempt
-#SBATCH --job-name=paR
-#SBATCH --output=logs/%j\.out
-#SBATCH --error=logs/%j\.err
-#SBATCH --time=00:03:00
-#SBATCH --account=kernlab
-#SBATCH --mem=2000MB
-#SBATCH --requeue
-
 filepath=$1
 sim=$2
 scoef=$3
