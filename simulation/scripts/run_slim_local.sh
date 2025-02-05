@@ -1,11 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=kern,kerngpu
-#SBATCH --job-name=pa
-#SBATCH --output=logs/%j\.out
-#SBATCH --error=logs/%j\.err
-#SBATCH --time=12:00:00
-#SBATCH --account=kernlab
-#SBATCH --mem=2000MB
+
 
 mkdir -p out/sim_$1\_s_$4\_Nw_$2
 cd out/sim_$1\_s_$4\_Nw_$2
