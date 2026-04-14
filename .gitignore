@@ -1,0 +1,45 @@
+# macOS
+.DS_Store
+
+# R
+.RData
+.Rhistory
+Rplot*.pdf
+*.html
+
+# Data files
+*.vcf
+*.bed
+*.zip
+anopheles/data/
+supp-data/
+
+# Output directories
+out/
+out-messy/
+figures/
+simulation/sweep_simulation/
+spatialAgBrowser/
+
+# Power analysis output
+power_analysis_*.txt
+simulation/power_analysis_*.txt
+simulation/power_analysis_cutoff_summary.txt
+
+# PDFs (generated figures/output)
+Rplot*.pdf
+fig-test.pdf
+test.pdf
+anopheles/ag*.pdf
+simulation/supplement_downsampled_power.pdf
+
+# Misc local files
+MBE-coverletter.pages
+Untitled.R
+figure-test.R
+allele_conceptviz.png
+anopheles/anopheles-analysis-messy.Rmd
+anopheles/anopheles_analyzed_snps.txt
+anopheles/davidgenes.txt
+anopheles/run_pcadapt.R
+simulation/melanogaster_simulans_11_IDs_cleaned_uniprot_final.txt
