@@ -1,7 +1,7 @@
 # Sweeps in space!
 
 This repo contains code for ["Sweeps in space: leveraging geographic data to identify
-beneficial alleles in *Anopheles gambiae*"](https://www.biorxiv.org/content/10.1101/2025.02.07.637123v1).
+beneficial alleles in *Anopheles gambiae*"](https://doi.org/10.1093/molbev/msaf141).
 
 ------------------
 
