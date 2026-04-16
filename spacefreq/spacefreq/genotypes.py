@@ -33,7 +33,7 @@ def read_vcf(
         sample_ids : list[str]
     """
     kwargs: dict = dict(
-        fields=["samples", "calldata/GT", "variants/POS"],
+        fields=["samples", "calldata/GT", "variants/POS", "variants/CHROM"],
     )
     if region is not None:
         kwargs["region"] = region
@@ -42,9 +42,10 @@ def read_vcf(
 
     sample_ids = list(callset["samples"])
     genotypes = allel.GenotypeArray(callset["calldata/GT"])
-    # Attach sample IDs directly; GenotypeArray (an ndarray subclass) allows
-    # arbitrary attribute assignment.
+    # Attach sample IDs and chromosomes directly; GenotypeArray (an ndarray
+    # subclass) allows arbitrary attribute assignment.
     genotypes.sample_ids = sample_ids
+    genotypes.chromosomes = callset["variants/CHROM"]
     positions = callset["variants/POS"]
 
     return genotypes, positions, sample_ids

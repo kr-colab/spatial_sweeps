@@ -63,9 +63,10 @@ def scan(
     -------
     pd.DataFrame with columns: ``position``, ``alternate``, ``frequency``, ``area``.
     """
-    # Capture sample_ids BEFORE any slicing; numpy slices do not preserve
+    # Capture attributes BEFORE any slicing; numpy slices do not preserve
     # custom attributes on ndarray subclasses.
     embedded_ids: list[str] | None = getattr(genotypes, "sample_ids", None)
+    chromosomes: np.ndarray | None = getattr(genotypes, "chromosomes", None)
 
     # ------------------------------------------------------------------
     # 1. Positional filtering
@@ -78,6 +79,8 @@ def scan(
 
     genotypes = genotypes[pos_mask]
     positions = positions[pos_mask]
+    if chromosomes is not None:
+        chromosomes = chromosomes[pos_mask]
 
     # ------------------------------------------------------------------
     # 2. Keep only polymorphic variants (at least one alt allele observed)
@@ -88,6 +91,8 @@ def scan(
     genotypes = genotypes[poly_mask]
     positions = positions[poly_mask]
     ac_all = ac_all[poly_mask]
+    if chromosomes is not None:
+        chromosomes = chromosomes[poly_mask]
 
     # ------------------------------------------------------------------
     # 3. Align genotypes to metadata samples.
@@ -172,17 +177,27 @@ def scan(
             area = calculate_area(locs, min_locs=min_locs, transect=transect,
                                   sample_area=sample_area)
 
-            rows.append({
+            row: dict = {
                 "position": int(positions[vi]),
                 "alternate": alt,
                 "frequency": freq,
                 "area": area if not math.isnan(area) else float("nan"),
-            })
+            }
+            if chromosomes is not None:
+                row["chromosome"] = chromosomes[vi]
+            rows.append(row)
 
     if not rows:
-        return pd.DataFrame(columns=["position", "alternate", "frequency", "area"])
+        cols = ["position", "alternate", "frequency", "area"]
+        if chromosomes is not None:
+            cols = ["chromosome"] + cols
+        return pd.DataFrame(columns=cols)
 
     df = pd.DataFrame(rows)
-    # Drop rows where area could not be calculated (below min_locs)
+    # Drop rows where area could not be calculated (below min_locs).
     df = df.dropna(subset=["area"]).reset_index(drop=True)
+    # Put chromosome first when present.
+    if "chromosome" in df.columns:
+        cols = ["chromosome", "position", "alternate", "frequency", "area"]
+        df = df[cols]
     return df
