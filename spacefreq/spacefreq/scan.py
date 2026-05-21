@@ -24,6 +24,9 @@ def scan(
     transect: float = 1.0,
     sample_area: float = 1.0,
     count_missing_as_ancestral: bool = True,
+    sample_col: str = "sampleID",
+    lon_col: str = "x",
+    lat_col: str = "y",
 ) -> pd.DataFrame:
     """Perform a spatial genome scan.
 
@@ -36,8 +39,9 @@ def scan(
     genotypes:
         GenotypeArray of shape (n_variants, n_samples, ploidy).
     metadata:
-        DataFrame with columns ``sampleID``, ``x`` (longitude), ``y`` (latitude).
-        Sample order must match the sample axis of *genotypes*.
+        DataFrame containing sample IDs and coordinates.  Column names are
+        mapped to the canonical names (``sampleID``, ``x``, ``y``) using the
+        *sample_col*, *lon_col*, and *lat_col* parameters.
     positions:
         1-D integer array of genomic positions, one per variant.
     filter:
@@ -58,11 +62,33 @@ def scan(
         Default area (km²) for a single sampling location.
     count_missing_as_ancestral:
         Passed through to :func:`spacefreq.freq.calculate_frequency`.
+    sample_col:
+        Name of the metadata column that holds sample IDs (default ``"sampleID"``).
+        Use ``"sample_id"`` for Ag1000G-style metadata.
+    lon_col:
+        Name of the metadata column that holds longitude (default ``"x"``).
+        Use ``"longitude"`` for Ag1000G-style metadata.
+    lat_col:
+        Name of the metadata column that holds latitude (default ``"y"``).
+        Use ``"latitude"`` for Ag1000G-style metadata.
 
     Returns
     -------
     pd.DataFrame with columns: ``position``, ``alternate``, ``frequency``, ``area``.
     """
+    # ------------------------------------------------------------------
+    # 0. Normalise metadata column names to canonical form.
+    # ------------------------------------------------------------------
+    rename_map = {}
+    if sample_col != "sampleID" and sample_col in metadata.columns:
+        rename_map[sample_col] = "sampleID"
+    if lon_col != "x" and lon_col in metadata.columns:
+        rename_map[lon_col] = "x"
+    if lat_col != "y" and lat_col in metadata.columns:
+        rename_map[lat_col] = "y"
+    if rename_map:
+        metadata = metadata.rename(columns=rename_map)
+
     # Capture attributes BEFORE any slicing; numpy slices do not preserve
     # custom attributes on ndarray subclasses.
     embedded_ids: list[str] | None = getattr(genotypes, "sample_ids", None)

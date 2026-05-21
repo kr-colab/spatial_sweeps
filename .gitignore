@@ -43,3 +43,6 @@ anopheles/anopheles_analyzed_snps.txt
 anopheles/davidgenes.txt
 anopheles/run_pcadapt.R
 simulation/melanogaster_simulans_11_IDs_cleaned_uniprot_final.txt
+gambiae/
+funestus/
+mart*.txt

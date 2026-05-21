@@ -23,7 +23,7 @@ def _main() -> None:
 @app.command()
 def scan(
     genotypes: Path = typer.Option(..., help="Path to VCF or VCF.gz genotype file."),
-    metadata: Path = typer.Option(..., help="Path to sample metadata TSV (columns: sampleID, x, y)."),
+    metadata: Path = typer.Option(..., help="Path to sample metadata TSV."),
     out: Path = typer.Option(..., help="Output path for the results TSV."),
     filter: Optional[Path] = typer.Option(None, help="Path to genotype filter VCF (optional)."),
     start: Optional[int] = typer.Option(None, help="Genomic start position (inclusive)."),
@@ -37,6 +37,9 @@ def scan(
         "--count-missing-as-ancestral/--no-count-missing-as-ancestral",
         help="Treat missing genotypes as homozygous reference.",
     ),
+    sample_col: str = typer.Option("sampleID", help="Metadata column containing sample IDs."),
+    lon_col: str = typer.Option("x", help="Metadata column containing longitude."),
+    lat_col: str = typer.Option("y", help="Metadata column containing latitude."),
 ) -> None:
     """Run a spatial genome scan on a VCF genotype file."""
     # Build region string for read_vcf if chromosome + range are given
@@ -66,6 +69,9 @@ def scan(
         transect=transect,
         sample_area=sample_area,
         count_missing_as_ancestral=count_missing_as_ancestral,
+        sample_col=sample_col,
+        lon_col=lon_col,
+        lat_col=lat_col,
     )
 
     result.to_csv(str(out), sep="\t")

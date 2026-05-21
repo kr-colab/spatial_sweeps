@@ -55,6 +55,43 @@ class TestCliOutputFile:
         assert required.issubset(df.columns)
 
 
+class TestCliColumnMapping:
+    """--sample-col / --lon-col / --lat-col must produce output identical to
+    the equivalent API call with the same column name arguments."""
+
+    def test_alt_col_names_produce_valid_output(self, tmp_path_factory):
+        # Load canonical metadata, rename columns, write to a temp TSV
+        canonical_meta = pd.read_csv(METADATA, sep="\t")
+        alt_meta = canonical_meta.rename(columns={
+            "sampleID": "sample_id",
+            "x": "longitude",
+            "y": "latitude",
+        })
+        meta_path = tmp_path_factory.mktemp("meta") / "alt_meta.tsv"
+        alt_meta.to_csv(meta_path, sep="\t", index=False)
+
+        out = tmp_path_factory.mktemp("out") / "result_alt.txt"
+        result = runner.invoke(
+            app,
+            [
+                "scan",
+                "--genotypes", VCF,
+                "--metadata", str(meta_path),
+                "--out", str(out),
+                "--start", "1",
+                "--stop", "500000",
+                "--sample-col", "sample_id",
+                "--lon-col", "longitude",
+                "--lat-col", "latitude",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert out.exists()
+        df = pd.read_csv(out, sep="\t", index_col=0)
+        assert len(df) > 0
+        assert {"position", "alternate", "frequency", "area"}.issubset(df.columns)
+
+
 class TestCliMatchesApi:
     def test_cli_matches_api_output(self, cli_output):
         """CLI and Python API must produce identical results for the same inputs."""
